@@ -1,0 +1,9 @@
+@Fiore_Api_HostAddress = http://localhost:5090
+
+GET {{Fiore_Api_HostAddress}}/health
+Accept: application/json
+
+###
+
+GET {{Fiore_Api_HostAddress}}/api/v1/catalog/products?page=1&pageSize=12
+Accept: application/json
