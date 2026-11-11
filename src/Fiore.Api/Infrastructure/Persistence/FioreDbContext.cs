@@ -11,7 +11,7 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.HasPostgresEnum<ProductStatus>("product_status");
+        modelBuilder.HasPostgresEnum<ProductStatus>(name: "product_status");
 
         modelBuilder.Entity<Product>(entity =>
         {

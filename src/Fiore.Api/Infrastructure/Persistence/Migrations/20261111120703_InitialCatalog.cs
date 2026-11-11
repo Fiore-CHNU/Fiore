@@ -13,7 +13,7 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AlterDatabase()
-                .Annotation("Npgsql:Enum:product_status.product_status", "available,hidden,discontinued");
+                .Annotation("Npgsql:Enum:product_status", "available,hidden,discontinued");
 
             migrationBuilder.CreateTable(
                 name: "products",

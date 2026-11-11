@@ -21,7 +21,7 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                 .HasAnnotation("ProductVersion", "8.0.11")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
-            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "product_status", "product_status", new[] { "available", "hidden", "discontinued" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "product_status", new[] { "available", "hidden", "discontinued" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.Product", b =>
