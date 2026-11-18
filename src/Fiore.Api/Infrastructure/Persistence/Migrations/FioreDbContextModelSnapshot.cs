@@ -2,6 +2,7 @@
 using System;
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using Fiore.Api.Domain.Identity;
 using Fiore.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -25,6 +26,7 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "cart_status", new[] { "active", "converted", "abandoned" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "order_status", new[] { "pending_payment", "paid", "accepted", "assembling", "ready_for_delivery", "out_for_delivery", "delivered", "cancelled" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "product_status", new[] { "available", "hidden", "discontinued" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "user_account_status", new[] { "active", "blocked" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.Product", b =>
@@ -371,6 +373,124 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("order_items", (string)null);
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.AppRole", b =>
+                {
+                    b.Property<short>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("smallint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<short>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("code");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("roles", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = (short)1,
+                            Code = "administrator",
+                            Name = "Administrator"
+                        },
+                        new
+                        {
+                            Id = (short)2,
+                            Code = "manager",
+                            Name = "Manager"
+                        },
+                        new
+                        {
+                            Id = (short)3,
+                            Code = "customer",
+                            Name = "Customer"
+                        });
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.AppUser", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("email");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("first_name");
+
+                    b.Property<string>("LastName")
+                        .HasColumnType("text")
+                        .HasColumnName("last_name");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("password_hash");
+
+                    b.Property<string>("Phone")
+                        .HasColumnType("text")
+                        .HasColumnName("phone");
+
+                    b.Property<UserAccountStatus>("Status")
+                        .HasColumnType("user_account_status")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.ToTable("app_users", (string)null);
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.UserRole", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<short>("RoleId")
+                        .HasColumnType("smallint")
+                        .HasColumnName("role_id");
+
+                    b.Property<DateTimeOffset>("AssignedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("assigned_at");
+
+                    b.HasKey("UserId", "RoleId");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("user_roles", (string)null);
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductImage", b =>
                 {
                     b.HasOne("Fiore.Api.Domain.Catalog.Product", "Product")
@@ -451,6 +571,25 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.Navigation("Product");
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.UserRole", b =>
+                {
+                    b.HasOne("Fiore.Api.Domain.Identity.AppRole", "Role")
+                        .WithMany("Users")
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Fiore.Api.Domain.Identity.AppUser", "User")
+                        .WithMany("Roles")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Role");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.Product", b =>
                 {
                     b.Navigation("Images");
@@ -469,6 +608,16 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.AppRole", b =>
+                {
+                    b.Navigation("Users");
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Identity.AppUser", b =>
+                {
+                    b.Navigation("Roles");
                 });
 #pragma warning restore 612, 618
         }

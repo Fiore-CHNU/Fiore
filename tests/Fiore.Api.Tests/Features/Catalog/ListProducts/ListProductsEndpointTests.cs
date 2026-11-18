@@ -165,13 +165,15 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
 
 public sealed class ListProductsWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private readonly string _databaseName = $"catalog-endpoint-tests-{Guid.NewGuid():N}";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<DbContextOptions<FioreDbContext>>();
-            services.AddDbContext<FioreDbContext>(options => options.UseInMemoryDatabase("catalog-endpoint-tests"));
+            services.AddDbContext<FioreDbContext>(options => options.UseInMemoryDatabase(_databaseName));
 
             using var scope = services.BuildServiceProvider().CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<FioreDbContext>();

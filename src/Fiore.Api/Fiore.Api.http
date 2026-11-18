@@ -2,6 +2,7 @@
 @ProductId = replace-with-a-product-id-from-the-catalogue-response
 @CartId = replace-with-the-created-cart-id
 @CartToken = replace-with-the-created-cart-session-token
+@AccessToken = replace-with-a-jwt-from-login
 
 GET {{Fiore_Api_HostAddress}}/health
 Accept: application/json
@@ -57,3 +58,51 @@ Content-Type: application/json
 GET {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout
 X-Cart-Token: {{CartToken}}
 Accept: application/json
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/auth/register
+Content-Type: application/json
+
+{
+  "email": "customer@example.test",
+  "password": "CorrectHorseBattery1",
+  "firstName": "Test",
+  "lastName": "Customer"
+}
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "customer@example.test",
+  "password": "CorrectHorseBattery1"
+}
+
+###
+
+GET {{Fiore_Api_HostAddress}}/api/v1/admin/orders
+Authorization: Bearer {{AccessToken}}
+Accept: application/json
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/admin/products
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+
+{
+  "sku": "FIO-DEMO-001",
+  "name": "Demo bouquet",
+  "basePrice": 850,
+  "quantityAvailable": 5,
+  "description": "Example product for the manager panel",
+  "images": [
+    {
+      "imageUrl": "https://example.test/demo-bouquet.jpg",
+      "altText": "Demo bouquet"
+    }
+  ]
+}

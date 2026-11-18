@@ -1,5 +1,6 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using Fiore.Api.Domain.Identity;
 using Microsoft.EntityFrameworkCore;
 
 namespace Fiore.Api.Infrastructure.Persistence;
@@ -14,12 +15,57 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<OrderDelivery> OrderDeliveries => Set<OrderDelivery>();
+    public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<AppRole> Roles => Set<AppRole>();
+    public DbSet<UserRole> UserRoles => Set<UserRole>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresEnum<ProductStatus>(name: "product_status");
         modelBuilder.HasPostgresEnum<CartStatus>(name: "cart_status");
         modelBuilder.HasPostgresEnum<OrderStatus>(name: "order_status");
+        modelBuilder.HasPostgresEnum<UserAccountStatus>(name: "user_account_status");
+
+        modelBuilder.Entity<AppUser>(entity =>
+        {
+            entity.ToTable("app_users");
+            entity.HasKey(user => user.Id);
+            entity.Property(user => user.Id).HasColumnName("id");
+            entity.Property(user => user.Email).HasColumnName("email").IsRequired();
+            entity.HasIndex(user => user.Email).IsUnique();
+            entity.Property(user => user.PasswordHash).HasColumnName("password_hash").IsRequired();
+            entity.Property(user => user.FirstName).HasColumnName("first_name").IsRequired();
+            entity.Property(user => user.LastName).HasColumnName("last_name");
+            entity.Property(user => user.Phone).HasColumnName("phone");
+            entity.Property(user => user.Status).HasColumnName("status").HasColumnType("user_account_status");
+            entity.Property(user => user.CreatedAt).HasColumnName("created_at");
+            entity.Property(user => user.UpdatedAt).HasColumnName("updated_at");
+            entity.HasMany(user => user.Roles).WithOne(role => role.User).HasForeignKey(role => role.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AppRole>(entity =>
+        {
+            entity.ToTable("roles");
+            entity.HasKey(role => role.Id);
+            entity.Property(role => role.Id).HasColumnName("id");
+            entity.Property(role => role.Code).HasColumnName("code").IsRequired();
+            entity.HasIndex(role => role.Code).IsUnique();
+            entity.Property(role => role.Name).HasColumnName("name").IsRequired();
+            entity.HasData(
+                new AppRole { Id = 1, Code = "administrator", Name = "Administrator" },
+                new AppRole { Id = 2, Code = "manager", Name = "Manager" },
+                new AppRole { Id = 3, Code = "customer", Name = "Customer" });
+        });
+
+        modelBuilder.Entity<UserRole>(entity =>
+        {
+            entity.ToTable("user_roles");
+            entity.HasKey(role => new { role.UserId, role.RoleId });
+            entity.Property(role => role.UserId).HasColumnName("user_id");
+            entity.Property(role => role.RoleId).HasColumnName("role_id");
+            entity.Property(role => role.AssignedAt).HasColumnName("assigned_at");
+            entity.HasOne(role => role.Role).WithMany(role => role.Users).HasForeignKey(role => role.RoleId).OnDelete(DeleteBehavior.Restrict);
+        });
 
         modelBuilder.Entity<Product>(entity =>
         {
