@@ -1,5 +1,7 @@
 @Fiore_Api_HostAddress = http://localhost:5090
 @ProductId = replace-with-a-product-id-from-the-catalogue-response
+@CartId = replace-with-the-created-cart-id
+@CartToken = replace-with-the-created-cart-session-token
 
 GET {{Fiore_Api_HostAddress}}/health
 Accept: application/json
@@ -12,4 +14,46 @@ Accept: application/json
 ###
 
 GET {{Fiore_Api_HostAddress}}/api/v1/catalog/products/{{ProductId}}
+Accept: application/json
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/carts
+Accept: application/json
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/carts/{{CartId}}/items
+X-Cart-Token: {{CartToken}}
+Content-Type: application/json
+
+{
+  "productId": "{{ProductId}}",
+  "quantity": 1
+}
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/checkout
+X-Cart-Token: {{CartToken}}
+Content-Type: application/json
+
+{
+  "cartId": "{{CartId}}",
+  "contactName": "Test Customer",
+  "contactEmail": "customer@example.test",
+  "contactPhone": "+380501112233",
+  "recipientName": "Test Recipient",
+  "recipientPhone": "+380501112233",
+  "city": "Chernivtsi",
+  "street": "Main Street",
+  "building": "1",
+  "scheduledFrom": "2026-11-20T10:00:00+02:00",
+  "scheduledTo": "2026-11-20T12:00:00+02:00"
+}
+
+###
+
+GET {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout
+X-Cart-Token: {{CartToken}}
 Accept: application/json

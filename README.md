@@ -23,6 +23,18 @@ Products marked `hidden` or `discontinued` are excluded. An out-of-stock product
 
 `GET /api/v1/catalog/products/{productId}` returns the public product-details view used by the product page: description, ordered image gallery, price, currency, and availability. Hidden and discontinued products return `404`.
 
+The catalogue also accepts optional UI filters: `search`, `minPrice`, `maxPrice`, `inStockOnly`, and `sort` (`newest`, `priceAscending`, or `priceDescending`).
+
+## Guest cart and checkout API
+
+The customer UI can use the following public flow:
+
+1. `POST /api/v1/carts` creates a guest cart and returns its `id` and `sessionToken`.
+2. Send the returned token as `X-Cart-Token` on `GET /api/v1/carts/{cartId}`, `POST /api/v1/carts/{cartId}/items`, `PUT /api/v1/carts/{cartId}/items/{productId}`, and `DELETE /api/v1/carts/{cartId}/items/{productId}`.
+3. `POST /api/v1/checkout` receives the cart ID, customer contact information, delivery address, and a delivery time range. It validates availability, stores immutable product-price snapshots, and returns an order in `pendingPayment` status. `GET /api/v1/orders/{orderId}` retrieves that confirmation and current status with the same `X-Cart-Token`.
+
+The current checkout does not deduct stock or redirect to a payment provider: reservation policy and the payment provider remain team decisions. This keeps the API honest until those integrations are approved.
+
 For the React/Vite client, CORS allows the default local development and preview origins: `http://localhost:5173` and `http://localhost:4173`. Add a production client URL through `Cors:AllowedOrigins` before deployment.
 
 ## Local setup

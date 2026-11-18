@@ -57,10 +57,109 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
         product.Images.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Guest_can_create_a_cart_add_a_product_and_checkout()
+    {
+        var catalogue = await _client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=1");
+        var productId = catalogue!.Items[0].Id;
+
+        var createCartResponse = await _client.PostAsync("/api/v1/carts", content: null);
+        createCartResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        var cart = await createCartResponse.Content.ReadFromJsonAsync<CartResponse>();
+        cart.Should().NotBeNull();
+
+        _client.DefaultRequestHeaders.Add("X-Cart-Token", cart!.SessionToken.ToString());
+        try
+        {
+            var addItemResponse = await _client.PostAsJsonAsync($"/api/v1/carts/{cart.Id}/items", new { productId, quantity = 2 });
+            addItemResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var scheduledFrom = new DateTimeOffset(DateTime.UtcNow.Date.AddDays(1).AddHours(10), TimeSpan.Zero);
+            var checkoutResponse = await _client.PostAsJsonAsync("/api/v1/checkout", new
+            {
+                cartId = cart.Id,
+                contactName = "Test Customer",
+                contactEmail = "customer@example.test",
+                contactPhone = "+380501112233",
+                recipientName = "Test Recipient",
+                recipientPhone = "+380501112233",
+                city = "Chernivtsi",
+                street = "Main Street",
+                building = "1",
+                scheduledFrom,
+                scheduledTo = scheduledFrom.AddHours(2)
+            });
+
+            checkoutResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+            var order = await checkoutResponse.Content.ReadFromJsonAsync<CheckoutResponse>();
+            order.Should().NotBeNull();
+            order!.Status.Should().Be("pendingPayment");
+            order.TotalAmount.Should().Be(1000);
+
+            var orderResponse = await _client.GetAsync($"/api/v1/orders/{order.OrderId}");
+            orderResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var persistedOrder = await orderResponse.Content.ReadFromJsonAsync<PersistedOrderResponse>();
+            persistedOrder.Should().NotBeNull();
+            persistedOrder!.Items.Should().ContainSingle();
+            persistedOrder.Items[0].Quantity.Should().Be(2);
+            persistedOrder.Delivery.City.Should().Be("Chernivtsi");
+
+            var repeatedCheckoutResponse = await _client.PostAsJsonAsync("/api/v1/checkout", new
+            {
+                cartId = cart.Id,
+                contactName = "Test Customer",
+                contactEmail = "customer@example.test",
+                contactPhone = "+380501112233",
+                recipientName = "Test Recipient",
+                recipientPhone = "+380501112233",
+                city = "Chernivtsi",
+                street = "Main Street",
+                building = "1",
+                scheduledFrom,
+                scheduledTo = scheduledFrom.AddHours(2)
+            });
+
+            repeatedCheckoutResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+        finally
+        {
+            _client.DefaultRequestHeaders.Remove("X-Cart-Token");
+        }
+    }
+
+    [Fact]
+    public async Task Guest_cannot_add_more_items_than_the_available_inventory()
+    {
+        var catalogue = await _client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=1");
+        var createCartResponse = await _client.PostAsync("/api/v1/carts", content: null);
+        var cart = await createCartResponse.Content.ReadFromJsonAsync<CartResponse>();
+
+        _client.DefaultRequestHeaders.Add("X-Cart-Token", cart!.SessionToken.ToString());
+        try
+        {
+            var response = await _client.PostAsJsonAsync($"/api/v1/carts/{cart.Id}/items", new
+            {
+                productId = catalogue!.Items[0].Id,
+                quantity = 6
+            });
+
+            response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        }
+        finally
+        {
+            _client.DefaultRequestHeaders.Remove("X-Cart-Token");
+        }
+    }
+
     private sealed record CatalogResponse(IReadOnlyList<CatalogItem> Items, PaginationResponse Pagination);
     private sealed record CatalogItem(Guid Id, string Sku, bool IsAvailable);
     private sealed record CatalogProductDetails(string Sku, bool IsAvailable, IReadOnlyList<CatalogImage> Images);
     private sealed record CatalogImage(string ImageUrl);
+    private sealed record CartResponse(Guid Id, Guid SessionToken);
+    private sealed record CheckoutResponse(Guid OrderId, string Status, decimal TotalAmount);
+    private sealed record PersistedOrderResponse(IReadOnlyList<PersistedOrderItem> Items, PersistedDelivery Delivery);
+    private sealed record PersistedOrderItem(int Quantity);
+    private sealed record PersistedDelivery(string City);
     private sealed record PaginationResponse(int Page, int PageSize, int TotalItems, int TotalPages);
 }
 

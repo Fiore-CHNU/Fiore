@@ -41,6 +41,24 @@ public sealed class ListProductsHandlerTests
         validation.Errors.Select(error => error.PropertyName).Should().Contain(["Page", "PageSize"]);
     }
 
+    [Fact]
+    public async Task Handle_filters_the_public_catalogue_by_search_and_stock()
+    {
+        await using var dbContext = CreateDbContext();
+        dbContext.Products.AddRange(
+            CreateProduct("FIO-001", "Winter bouquet", 1, ProductStatus.Available, 0),
+            CreateProduct("FIO-002", "Spring bouquet", 2, ProductStatus.Available, 4),
+            CreateProduct("FIO-003", "Spring hidden", 3, ProductStatus.Hidden, 5));
+        await dbContext.SaveChangesAsync();
+
+        var handler = new ListProductsHandler(dbContext);
+        var response = await handler.Handle(new ListProductsRequest(Search: "spring", InStockOnly: true), CancellationToken.None);
+
+        response.Items.Should().ContainSingle();
+        response.Items[0].Sku.Should().Be("FIO-002");
+        response.Pagination.TotalItems.Should().Be(1);
+    }
+
     private static FioreDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<FioreDbContext>()
