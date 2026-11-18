@@ -42,8 +42,25 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task Get_product_details_returns_the_public_product_with_its_images()
+    {
+        var catalogue = await _client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=1");
+
+        var response = await _client.GetAsync($"/api/v1/catalog/products/{catalogue!.Items[0].Id}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var product = await response.Content.ReadFromJsonAsync<CatalogProductDetails>();
+        product.Should().NotBeNull();
+        product!.Sku.Should().Be("FIO-002");
+        product.IsAvailable.Should().BeTrue();
+        product.Images.Should().BeEmpty();
+    }
+
     private sealed record CatalogResponse(IReadOnlyList<CatalogItem> Items, PaginationResponse Pagination);
-    private sealed record CatalogItem(string Sku, bool IsAvailable);
+    private sealed record CatalogItem(Guid Id, string Sku, bool IsAvailable);
+    private sealed record CatalogProductDetails(string Sku, bool IsAvailable, IReadOnlyList<CatalogImage> Images);
+    private sealed record CatalogImage(string ImageUrl);
     private sealed record PaginationResponse(int Page, int PageSize, int TotalItems, int TotalPages);
 }
 

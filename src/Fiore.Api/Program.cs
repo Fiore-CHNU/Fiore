@@ -1,3 +1,4 @@
+using Fiore.Api.Features.Catalog.GetProductDetails;
 using Fiore.Api.Features.Catalog.ListProducts;
 using Fiore.Api.Infrastructure.Persistence;
 using Fiore.Api.Domain.Catalog;
@@ -20,6 +21,15 @@ builder.Services.AddMediatR(configuration => configuration.RegisterServicesFromA
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddCors(options => options.AddPolicy("Frontend", policy =>
+{
+    var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+        ?? ["http://localhost:5173", "http://localhost:4173"];
+
+    policy.WithOrigins(allowedOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod();
+}));
 
 var app = builder.Build();
 
@@ -29,11 +39,14 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors("Frontend");
+
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
     .WithName("HealthCheck")
     .WithOpenApi();
 
 app.MapCatalogEndpoints();
+app.MapCatalogDetailEndpoints();
 
 app.Run();
 

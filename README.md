@@ -21,6 +21,10 @@ Sprint I starts with `EAN-152`, the paginated public catalogue API.
 
 Products marked `hidden` or `discontinued` are excluded. An out-of-stock product remains visible and is returned with `isAvailable: false`.
 
+`GET /api/v1/catalog/products/{productId}` returns the public product-details view used by the product page: description, ordered image gallery, price, currency, and availability. Hidden and discontinued products return `404`.
+
+For the React/Vite client, CORS allows the default local development and preview origins: `http://localhost:5173` and `http://localhost:4173`. Add a production client URL through `Cors:AllowedOrigins` before deployment.
+
 ## Local setup
 
 Prerequisites: .NET SDK 8, Docker Desktop, and Docker Compose.
