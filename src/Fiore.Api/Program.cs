@@ -1,9 +1,13 @@
 using Fiore.Api.Features.Catalog.GetProductDetails;
 using Fiore.Api.Features.Catalog.ListProducts;
+using Fiore.Api.Features.Catalog.Facets;
 using Fiore.Api.Features.Carts;
 using Fiore.Api.Features.Checkout;
 using Fiore.Api.Features.Auth;
 using Fiore.Api.Features.Admin;
+using Fiore.Api.Features.Delivery;
+using Fiore.Api.Features.Orders;
+using Fiore.Api.Features.Payments;
 using Fiore.Api.Infrastructure.Persistence;
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
@@ -35,8 +39,10 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
 dataSourceBuilder.MapEnum<ProductStatus>("product_status");
+dataSourceBuilder.MapEnum<ProductFacetKind>("product_facet_kind");
 dataSourceBuilder.MapEnum<CartStatus>("cart_status");
 dataSourceBuilder.MapEnum<OrderStatus>("order_status");
+dataSourceBuilder.MapEnum<PaymentStatus>("payment_status");
 dataSourceBuilder.MapEnum<UserAccountStatus>("user_account_status");
 var dataSource = dataSourceBuilder.Build();
 
@@ -46,6 +52,10 @@ builder.Services.AddMediatR(configuration => configuration.RegisterServicesFromA
 builder.Services.AddSingleton(jwtOptions);
 builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
 builder.Services.AddScoped<TokenService>();
+builder.Services.AddSingleton(builder.Configuration.GetSection(DeliveryOptions.SectionName).Get<DeliveryOptions>() ?? new DeliveryOptions());
+builder.Services.AddScoped<DeliverySlotService>();
+builder.Services.AddScoped<OrderLifecycleService>();
+builder.Services.AddHostedService<UnpaidOrderExpirationService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -92,8 +102,11 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
 
 app.MapCatalogEndpoints();
 app.MapCatalogDetailEndpoints();
+app.MapFacetEndpoints();
 app.MapCartEndpoints();
 app.MapCheckoutEndpoints();
+app.MapDeliveryEndpoints();
+app.MapPaymentEndpoints();
 app.MapAuthEndpoints();
 app.MapAdminEndpoints();
 

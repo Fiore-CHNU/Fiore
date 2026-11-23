@@ -1,6 +1,7 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
 using Fiore.Api.Features.Carts;
+using Fiore.Api.Features.Delivery;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
 using MediatR;
@@ -37,9 +38,13 @@ public sealed record OrderDetailsResponse(
     string Currency,
     DateTimeOffset CreatedAt,
     IReadOnlyList<OrderItemResponse> Items,
-    DeliveryDetailsResponse Delivery);
+    DeliveryDetailsResponse Delivery,
+    PaymentDetailsResponse? Payment,
+    IReadOnlyList<OrderStatusHistoryResponse> StatusHistory);
 public sealed record OrderItemResponse(Guid ProductId, string Name, string Sku, decimal UnitPrice, int Quantity, decimal LineTotal);
 public sealed record DeliveryDetailsResponse(string RecipientName, string RecipientPhone, string City, string Street, string Building, string? Apartment, string? DeliveryNotes, DateTimeOffset ScheduledFrom, DateTimeOffset ScheduledTo);
+public sealed record PaymentDetailsResponse(string Provider, PaymentStatus Status, decimal Amount, string Currency);
+public sealed record OrderStatusHistoryResponse(OrderStatus Status, string? Note, DateTimeOffset ChangedAt);
 
 public enum CheckoutError
 {
@@ -49,7 +54,9 @@ public enum CheckoutError
     CartEmpty,
     ProductNotAvailable,
     QuantityExceedsAvailability,
-    MixedCurrencies
+    MixedCurrencies,
+    DeliverySlotUnavailable,
+    DeliverySlotInvalid
 }
 
 public sealed record CheckoutResult(CheckoutResponse? Order, CheckoutError? Error)
@@ -87,7 +94,7 @@ public sealed class CheckoutRequestValidator : AbstractValidator<CheckoutRequest
     }
 }
 
-public sealed class CheckoutHandler(FioreDbContext dbContext) : IRequestHandler<CheckoutCommand, CheckoutResult>
+public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotService deliverySlotService) : IRequestHandler<CheckoutCommand, CheckoutResult>
 {
     public async Task<CheckoutResult> Handle(CheckoutCommand command, CancellationToken cancellationToken)
     {
@@ -102,6 +109,8 @@ public sealed class CheckoutHandler(FioreDbContext dbContext) : IRequestHandler<
         if (cart.SessionToken != command.SessionToken) return CheckoutResult.Failure(CheckoutError.InvalidSession);
         if (cart.Status != CartStatus.Active) return CheckoutResult.Failure(CheckoutError.CartInactive);
         if (cart.Items.Count == 0) return CheckoutResult.Failure(CheckoutError.CartEmpty);
+        if (!deliverySlotService.IsConfiguredSlot(request.ScheduledFrom, request.ScheduledTo)) return CheckoutResult.Failure(CheckoutError.DeliverySlotInvalid);
+        if (!await deliverySlotService.HasCapacity(null, request.ScheduledFrom, request.ScheduledTo, cancellationToken)) return CheckoutResult.Failure(CheckoutError.DeliverySlotUnavailable);
 
         foreach (var item in cart.Items)
         {
@@ -124,9 +133,11 @@ public sealed class CheckoutHandler(FioreDbContext dbContext) : IRequestHandler<
 
         var now = DateTimeOffset.UtcNow;
         var subtotal = cart.Items.Sum(item => item.Product.BasePrice * item.Quantity);
+        var deliveryFee = deliverySlotService.CalculateFee(subtotal);
+        var orderId = Guid.NewGuid();
         var order = new Order
         {
-            Id = Guid.NewGuid(),
+            Id = orderId,
             SourceCartId = cart.Id,
             ContactName = request.ContactName.Trim(),
             ContactEmail = request.ContactEmail.Trim(),
@@ -134,14 +145,15 @@ public sealed class CheckoutHandler(FioreDbContext dbContext) : IRequestHandler<
             Status = OrderStatus.PendingPayment,
             Currency = currency,
             SubtotalAmount = subtotal,
-            DeliveryFeeAmount = 0,
-            TotalAmount = subtotal,
+            DeliveryFeeAmount = deliveryFee,
+            TotalAmount = subtotal + deliveryFee,
             CustomerNote = request.CustomerNote?.Trim(),
             CardMessage = request.CardMessage?.Trim(),
             CreatedAt = now,
             UpdatedAt = now,
             Delivery = new OrderDelivery
             {
+                OrderId = orderId,
                 RecipientName = request.RecipientName.Trim(),
                 RecipientPhone = request.RecipientPhone.Trim(),
                 City = request.City.Trim(),
@@ -161,8 +173,37 @@ public sealed class CheckoutHandler(FioreDbContext dbContext) : IRequestHandler<
                 UnitPrice = item.Product.BasePrice,
                 Quantity = item.Quantity,
                 LineTotal = item.Product.BasePrice * item.Quantity
-            }).ToList()
+            }).ToList(),
+            Payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                OrderId = orderId,
+                Provider = "sandbox",
+                ProviderPaymentId = $"sandbox-{Guid.NewGuid():N}",
+                Status = PaymentStatus.Initiated,
+                Amount = subtotal + deliveryFee,
+                Currency = currency,
+                CreatedAt = now,
+                UpdatedAt = now
+            },
+            StatusHistory =
+            [
+                new OrderStatusHistory
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = orderId,
+                    Status = OrderStatus.PendingPayment,
+                    Note = "Order created; awaiting payment.",
+                    ChangedAt = now
+                }
+            ]
         };
+
+        foreach (var item in cart.Items)
+        {
+            item.Product.Inventory!.QuantityAvailable -= item.Quantity;
+            item.Product.Inventory.UpdatedAt = now;
+        }
 
         cart.Status = CartStatus.Converted;
         cart.UpdatedAt = now;
@@ -181,6 +222,8 @@ public sealed class GetOrderHandler(FioreDbContext dbContext) : IRequestHandler<
             .AsNoTracking()
             .Include(candidate => candidate.Items)
             .Include(candidate => candidate.Delivery)
+            .Include(candidate => candidate.Payment)
+            .Include(candidate => candidate.StatusHistory)
             .SingleOrDefaultAsync(candidate => candidate.Id == request.OrderId &&
                 dbContext.Carts.Any(cart => cart.Id == candidate.SourceCartId && cart.SessionToken == request.SessionToken),
                 cancellationToken);
@@ -208,7 +251,9 @@ public sealed class GetOrderHandler(FioreDbContext dbContext) : IRequestHandler<
                 order.Delivery.Apartment,
                 order.Delivery.DeliveryNotes,
                 order.Delivery.ScheduledFrom,
-                order.Delivery.ScheduledTo));
+                order.Delivery.ScheduledTo),
+            order.Payment is null ? null : new PaymentDetailsResponse(order.Payment.Provider, order.Payment.Status, order.Payment.Amount, order.Payment.Currency),
+            order.StatusHistory.OrderBy(history => history.ChangedAt).Select(history => new OrderStatusHistoryResponse(history.Status, history.Note, history.ChangedAt)).ToList());
     }
 }
 
@@ -240,7 +285,7 @@ public static class CheckoutEndpoints
                 null => Results.Created($"/api/v1/orders/{result.Order!.OrderId}", result.Order),
                 CheckoutError.CartNotFound => Results.NotFound(),
                 CheckoutError.InvalidSession => Results.Forbid(),
-                CheckoutError.QuantityExceedsAvailability => Results.Conflict(new { error = result.Error.ToString() }),
+                CheckoutError.QuantityExceedsAvailability or CheckoutError.DeliverySlotUnavailable => Results.Conflict(new { error = result.Error.ToString() }),
                 _ => Results.BadRequest(new { error = result.Error!.ToString() })
             };
         }).WithName("CheckoutGuestCart").WithOpenApi();

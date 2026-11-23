@@ -59,6 +59,23 @@ public sealed class ListProductsHandlerTests
         response.Pagination.TotalItems.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Handle_filters_by_facet_and_finds_a_flower_in_composition()
+    {
+        await using var dbContext = CreateDbContext();
+        var product = CreateProduct("FIO-ROSE", "Evening bouquet", 1, ProductStatus.Available, 3);
+        var facet = new CatalogFacet { Id = Guid.NewGuid(), Kind = ProductFacetKind.Color, Slug = "red", Name = "Red" };
+        product.Composition.Add(new ProductCompositionItem { Id = Guid.NewGuid(), ProductId = product.Id, FlowerName = "Red rose", StemCount = 11, SortOrder = 0 });
+        product.Facets.Add(new ProductFacet { ProductId = product.Id, FacetId = facet.Id, Facet = facet });
+        dbContext.Products.Add(product);
+        await dbContext.SaveChangesAsync();
+
+        var handler = new ListProductsHandler(dbContext);
+        var response = await handler.Handle(new ListProductsRequest(Search: "rose", Color: "red"), CancellationToken.None);
+
+        response.Items.Should().ContainSingle().Which.Sku.Should().Be("FIO-ROSE");
+    }
+
     private static FioreDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<FioreDbContext>()

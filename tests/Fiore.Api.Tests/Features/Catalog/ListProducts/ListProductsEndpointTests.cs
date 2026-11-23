@@ -43,6 +43,19 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
     }
 
     [Fact]
+    public async Task Delivery_slots_are_available_to_the_checkout_client()
+    {
+        var tomorrow = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(1));
+
+        var response = await _client.GetAsync($"/api/v1/delivery/slots?date={tomorrow:yyyy-MM-dd}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var slots = await response.Content.ReadFromJsonAsync<IReadOnlyList<DeliverySlotResponse>>();
+        slots.Should().HaveCount(5);
+        slots!.Should().OnlyContain(slot => slot.RemainingCapacity >= 0 && slot.RemainingCapacity <= 10 && slot.FeeAmount == 120m);
+    }
+
+    [Fact]
     public async Task Get_product_details_returns_the_public_product_with_its_images()
     {
         var catalogue = await _client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=1");
@@ -94,7 +107,7 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
             var order = await checkoutResponse.Content.ReadFromJsonAsync<CheckoutResponse>();
             order.Should().NotBeNull();
             order!.Status.Should().Be("pendingPayment");
-            order.TotalAmount.Should().Be(1000);
+            order.TotalAmount.Should().Be(1120);
 
             var orderResponse = await _client.GetAsync($"/api/v1/orders/{order.OrderId}");
             orderResponse.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -103,6 +116,18 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
             persistedOrder!.Items.Should().ContainSingle();
             persistedOrder.Items[0].Quantity.Should().Be(2);
             persistedOrder.Delivery.City.Should().Be("Chernivtsi");
+            persistedOrder.Payment.Status.Should().Be("initiated");
+
+            var paymentResponse = await _client.PostAsync($"/api/v1/orders/{order.OrderId}/payments/sandbox/confirm", content: null);
+            paymentResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var payment = await paymentResponse.Content.ReadFromJsonAsync<PaymentResponse>();
+            payment!.PaymentStatus.Should().Be("succeeded");
+            payment.OrderStatus.Should().Be("paid");
+
+            var paidOrderResponse = await _client.GetAsync($"/api/v1/orders/{order.OrderId}");
+            var paidOrder = await paidOrderResponse.Content.ReadFromJsonAsync<PersistedOrderResponse>();
+            paidOrder!.Status.Should().Be("paid");
+            paidOrder.StatusHistory.Should().HaveCount(2);
 
             var repeatedCheckoutResponse = await _client.PostAsJsonAsync("/api/v1/checkout", new
             {
@@ -157,9 +182,13 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
     private sealed record CatalogImage(string ImageUrl);
     private sealed record CartResponse(Guid Id, Guid SessionToken);
     private sealed record CheckoutResponse(Guid OrderId, string Status, decimal TotalAmount);
-    private sealed record PersistedOrderResponse(IReadOnlyList<PersistedOrderItem> Items, PersistedDelivery Delivery);
+    private sealed record PersistedOrderResponse(string Status, IReadOnlyList<PersistedOrderItem> Items, PersistedDelivery Delivery, PersistedPayment Payment, IReadOnlyList<PersistedStatusHistory> StatusHistory);
     private sealed record PersistedOrderItem(int Quantity);
     private sealed record PersistedDelivery(string City);
+    private sealed record PersistedPayment(string Status);
+    private sealed record PersistedStatusHistory(string Status);
+    private sealed record PaymentResponse(string PaymentStatus, string OrderStatus);
+    private sealed record DeliverySlotResponse(int RemainingCapacity, decimal FeeAmount);
     private sealed record PaginationResponse(int Page, int PageSize, int TotalItems, int TotalPages);
 }
 

@@ -20,6 +20,8 @@ public sealed class Order
     public DateTimeOffset UpdatedAt { get; set; }
     public List<OrderItem> Items { get; set; } = [];
     public OrderDelivery Delivery { get; set; } = null!;
+    public Payment Payment { get; set; } = null!;
+    public List<OrderStatusHistory> StatusHistory { get; set; } = [];
 }
 
 public sealed class OrderItem
@@ -48,5 +50,30 @@ public sealed class OrderDelivery
     public string? DeliveryNotes { get; set; }
     public DateTimeOffset ScheduledFrom { get; set; }
     public DateTimeOffset ScheduledTo { get; set; }
+    public Order Order { get; set; } = null!;
+}
+
+public sealed class Payment
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public string Provider { get; set; } = null!;
+    public string ProviderPaymentId { get; set; } = null!;
+    public PaymentStatus Status { get; set; } = PaymentStatus.Initiated;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = "UAH";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
+    public Order Order { get; set; } = null!;
+}
+
+public sealed class OrderStatusHistory
+{
+    public Guid Id { get; set; }
+    public Guid OrderId { get; set; }
+    public OrderStatus Status { get; set; }
+    public string? Note { get; set; }
+    public DateTimeOffset ChangedAt { get; set; }
     public Order Order { get; set; } = null!;
 }

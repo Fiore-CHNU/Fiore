@@ -19,6 +19,16 @@ Accept: application/json
 
 ###
 
+GET {{Fiore_Api_HostAddress}}/api/v1/catalog/facets?kind=color
+Accept: application/json
+
+###
+
+GET {{Fiore_Api_HostAddress}}/api/v1/delivery/slots?date=2026-11-24
+Accept: application/json
+
+###
+
 POST {{Fiore_Api_HostAddress}}/api/v1/carts
 Accept: application/json
 
@@ -61,6 +71,11 @@ Accept: application/json
 
 ###
 
+POST {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout/payments/sandbox/confirm
+X-Cart-Token: {{CartToken}}
+
+###
+
 POST {{Fiore_Api_HostAddress}}/api/v1/auth/register
 Content-Type: application/json
 
@@ -99,10 +114,28 @@ Content-Type: application/json
   "basePrice": 850,
   "quantityAvailable": 5,
   "description": "Example product for the manager panel",
+  "heightCm": 45,
+  "widthCm": 30,
+  "composition": [
+    { "flowerName": "Rose", "stemCount": 11 },
+    { "flowerName": "Eucalyptus", "stemCount": 3, "note": "Seasonal greenery" }
+  ],
   "images": [
     {
       "imageUrl": "https://example.test/demo-bouquet.jpg",
       "altText": "Demo bouquet"
     }
   ]
+}
+
+###
+
+POST {{Fiore_Api_HostAddress}}/api/v1/admin/catalog/facets
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+
+{
+  "kind": "color",
+  "slug": "red",
+  "name": "Red"
 }

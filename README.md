@@ -21,9 +21,9 @@ Sprint I starts with `EAN-152`, the paginated public catalogue API.
 
 Products marked `hidden` or `discontinued` are excluded. An out-of-stock product remains visible and is returned with `isAvailable: false`.
 
-`GET /api/v1/catalog/products/{productId}` returns the public product-details view used by the product page: description, ordered image gallery, price, currency, and availability. Hidden and discontinued products return `404`.
+`GET /api/v1/catalog/products/{productId}` returns the public product-details view used by the product page: description, ordered image gallery, price, currency, dimensions, bouquet composition, and filter facets. Hidden and discontinued products return `404`.
 
-The catalogue also accepts optional UI filters: `search`, `minPrice`, `maxPrice`, `inStockOnly`, and `sort` (`newest`, `priceAscending`, or `priceDescending`).
+The catalogue also accepts optional UI filters: `search` (name, SKU, or composition), `minPrice`, `maxPrice`, `inStockOnly`, `occasion`, `flowerType`, `color`, and `sort` (`newest`, `priceAscending`, or `priceDescending`). `GET /api/v1/catalog/facets` supplies filter values; managers can maintain them through the back-office API.
 
 ## Guest cart and checkout API
 
@@ -31,9 +31,12 @@ The customer UI can use the following public flow:
 
 1. `POST /api/v1/carts` creates a guest cart and returns its `id` and `sessionToken`.
 2. Send the returned token as `X-Cart-Token` on `GET /api/v1/carts/{cartId}`, `POST /api/v1/carts/{cartId}/items`, `PUT /api/v1/carts/{cartId}/items/{productId}`, and `DELETE /api/v1/carts/{cartId}/items/{productId}`.
-3. `POST /api/v1/checkout` receives the cart ID, customer contact information, delivery address, and a delivery time range. It validates availability, stores immutable product-price snapshots, and returns an order in `pendingPayment` status. `GET /api/v1/orders/{orderId}` retrieves that confirmation and current status with the same `X-Cart-Token`.
+3. `GET /api/v1/delivery/slots?date=YYYY-MM-DD` returns configured two-hour slots and their remaining capacity. `POST /api/v1/checkout` receives the cart ID, contact information, delivery address, and a slot. It validates availability and capacity, reserves stock, stores immutable product-price snapshots, calculates delivery, and returns an order in `pendingPayment` status.
+4. `POST /api/v1/orders/{orderId}/payments/sandbox/confirm` simulates a successful card payment for the current guest order. It is a local demo contract, not a payment-acquirer integration. `GET /api/v1/orders/{orderId}` retrieves the confirmation, payment state, and status timeline with the same `X-Cart-Token`.
 
-The current checkout does not deduct stock or redirect to a payment provider: reservation policy and the payment provider remain team decisions. This keeps the API honest until those integrations are approved.
+Checkout reserves inventory immediately. Pending payments automatically expire after 30 minutes by default and restore stock; both the lifetime and check interval are configurable under `Orders`. Delivery is a fixed UAH fee with a free-delivery threshold and slot capacity, configured under `Delivery`.
+
+The production payment provider is still a team decision. Replace the sandbox confirmation endpoint with a verified webhook from the selected provider (for example LiqPay) before any public deployment.
 
 ## Accounts and back-office API
 
@@ -42,7 +45,8 @@ The current checkout does not deduct stock or redirect to a payment provider: re
 The protected back-office API is deliberately restricted to `manager` and `administrator` roles:
 
 - `POST /api/v1/admin/products` creates a product, initial stock, and optional image gallery.
-- `PUT /api/v1/admin/products/{productId}` changes product data, status, stock, and gallery.
+- `PUT /api/v1/admin/products/{productId}` changes product data, dimensions, composition, filter facets, status, stock, and gallery.
+- `POST /api/v1/admin/catalog/facets` creates an occasion, flower-type, or colour facet used by the catalogue filters.
 - `GET /api/v1/admin/orders` lists orders for operational work.
 - `PUT /api/v1/admin/orders/{orderId}/status` moves an order only through the supported process: `pendingPayment → paid → accepted → assembling → readyForDelivery → outForDelivery → delivered`. Cancellation is allowed before dispatch.
 

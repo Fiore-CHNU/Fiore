@@ -25,6 +25,7 @@ public sealed class GetProductDetailsHandlerTests
         response.Images.Select(image => image.ImageUrl).Should().ContainInOrder(
             "https://cdn.example.test/primary.jpg",
             "https://cdn.example.test/secondary.jpg");
+        response.Composition.Should().BeEmpty();
     }
 
     [Fact]
@@ -65,6 +66,8 @@ public sealed class GetProductDetailsHandlerTests
             Status = status,
             CreatedAt = DateTimeOffset.UnixEpoch,
             UpdatedAt = DateTimeOffset.UnixEpoch,
+            HeightCm = 45,
+            WidthCm = 30,
             Images =
             [
                 new ProductImage

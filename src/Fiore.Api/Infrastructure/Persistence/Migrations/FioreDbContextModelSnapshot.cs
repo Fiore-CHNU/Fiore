@@ -25,9 +25,42 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "cart_status", new[] { "active", "converted", "abandoned" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "order_status", new[] { "pending_payment", "paid", "accepted", "assembling", "ready_for_delivery", "out_for_delivery", "delivered", "cancelled" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "payment_status", new[] { "initiated", "succeeded", "failed", "expired" });
+            NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "product_facet_kind", new[] { "occasion", "flower_type", "color" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "product_status", new[] { "available", "hidden", "discontinued" });
             NpgsqlModelBuilderExtensions.HasPostgresEnum(modelBuilder, "user_account_status", new[] { "active", "blocked" });
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.CatalogFacet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<ProductFacetKind>("Kind")
+                        .HasColumnType("product_facet_kind")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("slug");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Kind", "Slug")
+                        .IsUnique();
+
+                    b.ToTable("catalog_facets", (string)null);
+                });
 
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.Product", b =>
                 {
@@ -55,6 +88,11 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<decimal?>("HeightCm")
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)")
+                        .HasColumnName("height_cm");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
@@ -73,12 +111,72 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
+                    b.Property<decimal?>("WidthCm")
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)")
+                        .HasColumnName("width_cm");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Sku")
                         .IsUnique();
 
                     b.ToTable("products", (string)null);
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductCompositionItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("FlowerName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("flower_name");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<short>("SortOrder")
+                        .HasColumnType("smallint")
+                        .HasColumnName("sort_order");
+
+                    b.Property<short>("StemCount")
+                        .HasColumnType("smallint")
+                        .HasColumnName("stem_count");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId", "SortOrder")
+                        .IsUnique();
+
+                    b.ToTable("product_composition_items", (string)null);
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductFacet", b =>
+                {
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<Guid>("FacetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("facet_id");
+
+                    b.HasKey("ProductId", "FacetId");
+
+                    b.HasIndex("FacetId");
+
+                    b.ToTable("product_facets", (string)null);
                 });
 
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductImage", b =>
@@ -373,6 +471,98 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("order_items", (string)null);
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Commerce.OrderStatusHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("ChangedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("changed_at");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<OrderStatus>("Status")
+                        .HasColumnType("order_status")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId", "ChangedAt");
+
+                    b.ToTable("order_status_history", (string)null);
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Commerce.Payment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<PaymentStatus>("Status")
+                        .HasColumnType("payment_status")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.HasIndex("Provider", "ProviderPaymentId")
+                        .IsUnique();
+
+                    b.ToTable("payments", (string)null);
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Identity.AppRole", b =>
                 {
                     b.Property<short>("Id")
@@ -491,6 +681,36 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("user_roles", (string)null);
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductCompositionItem", b =>
+                {
+                    b.HasOne("Fiore.Api.Domain.Catalog.Product", "Product")
+                        .WithMany("Composition")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductFacet", b =>
+                {
+                    b.HasOne("Fiore.Api.Domain.Catalog.CatalogFacet", "Facet")
+                        .WithMany("Products")
+                        .HasForeignKey("FacetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Fiore.Api.Domain.Catalog.Product", "Product")
+                        .WithMany("Facets")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Facet");
+
+                    b.Navigation("Product");
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.ProductImage", b =>
                 {
                     b.HasOne("Fiore.Api.Domain.Catalog.Product", "Product")
@@ -571,6 +791,28 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.Navigation("Product");
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Commerce.OrderStatusHistory", b =>
+                {
+                    b.HasOne("Fiore.Api.Domain.Commerce.Order", "Order")
+                        .WithMany("StatusHistory")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("Fiore.Api.Domain.Commerce.Payment", b =>
+                {
+                    b.HasOne("Fiore.Api.Domain.Commerce.Order", "Order")
+                        .WithOne("Payment")
+                        .HasForeignKey("Fiore.Api.Domain.Commerce.Payment", "OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Identity.UserRole", b =>
                 {
                     b.HasOne("Fiore.Api.Domain.Identity.AppRole", "Role")
@@ -590,8 +832,17 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Fiore.Api.Domain.Catalog.CatalogFacet", b =>
+                {
+                    b.Navigation("Products");
+                });
+
             modelBuilder.Entity("Fiore.Api.Domain.Catalog.Product", b =>
                 {
+                    b.Navigation("Composition");
+
+                    b.Navigation("Facets");
+
                     b.Navigation("Images");
 
                     b.Navigation("Inventory");
@@ -608,6 +859,11 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Items");
+
+                    b.Navigation("Payment")
+                        .IsRequired();
+
+                    b.Navigation("StatusHistory");
                 });
 
             modelBuilder.Entity("Fiore.Api.Domain.Identity.AppRole", b =>

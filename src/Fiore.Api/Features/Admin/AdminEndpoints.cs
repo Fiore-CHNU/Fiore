@@ -1,5 +1,6 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using Fiore.Api.Features.Orders;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Fiore.Api.Features.Admin;
 
 public sealed record AdminProductImageRequest(string ImageUrl, string? AltText = null);
+public sealed record AdminCompositionRequest(string FlowerName, short StemCount, string? Note = null);
+public sealed record CreateCatalogFacetRequest(ProductFacetKind Kind, string Slug, string Name);
 public sealed record CreateProductRequest(
     string Sku,
     string Name,
@@ -16,7 +19,11 @@ public sealed record CreateProductRequest(
     int ReorderLevel = 0,
     string Currency = "UAH",
     ProductStatus Status = ProductStatus.Available,
-    IReadOnlyList<AdminProductImageRequest>? Images = null);
+    IReadOnlyList<AdminProductImageRequest>? Images = null,
+    decimal? HeightCm = null,
+    decimal? WidthCm = null,
+    IReadOnlyList<AdminCompositionRequest>? Composition = null,
+    IReadOnlyList<Guid>? FacetIds = null);
 public sealed record UpdateProductRequest(
     string Name,
     decimal BasePrice,
@@ -25,7 +32,11 @@ public sealed record UpdateProductRequest(
     int ReorderLevel = 0,
     string Currency = "UAH",
     ProductStatus Status = ProductStatus.Available,
-    IReadOnlyList<AdminProductImageRequest>? Images = null);
+    IReadOnlyList<AdminProductImageRequest>? Images = null,
+    decimal? HeightCm = null,
+    decimal? WidthCm = null,
+    IReadOnlyList<AdminCompositionRequest>? Composition = null,
+    IReadOnlyList<Guid>? FacetIds = null);
 
 public sealed class CreateProductRequestValidator : AbstractValidator<CreateProductRequest>
 {
@@ -43,11 +54,19 @@ public sealed class CreateProductRequestValidator : AbstractValidator<CreateProd
         RuleFor(request => request.ReorderLevel).GreaterThanOrEqualTo(0);
         RuleFor(request => request.Currency).NotEmpty().Length(3).Matches("^[A-Z]{3}$");
         RuleFor(request => request.Description).MaximumLength(4000).When(request => request.Description is not null);
+        RuleFor(request => request.HeightCm).GreaterThan(0).LessThan(1000).When(request => request.HeightCm.HasValue);
+        RuleFor(request => request.WidthCm).GreaterThan(0).LessThan(1000).When(request => request.WidthCm.HasValue);
         RuleForEach(request => request.Images).ChildRules(image =>
         {
             image.RuleFor(value => value.ImageUrl).NotEmpty().MaximumLength(2048).Must(value => Uri.IsWellFormedUriString(value, UriKind.Absolute))
                 .WithMessage("Image URL must be an absolute URI.");
             image.RuleFor(value => value.AltText).MaximumLength(250).When(value => value.AltText is not null);
+        });
+        RuleForEach(request => request.Composition).ChildRules(item =>
+        {
+            item.RuleFor(value => value.FlowerName).NotEmpty().MaximumLength(120);
+            item.RuleFor(value => value.StemCount).InclusiveBetween((short)1, (short)200);
+            item.RuleFor(value => value.Note).MaximumLength(250).When(value => value.Note is not null);
         });
     }
 }
@@ -62,10 +81,18 @@ public sealed class UpdateProductRequestValidator : AbstractValidator<UpdateProd
         RuleFor(request => request.ReorderLevel).GreaterThanOrEqualTo(0);
         RuleFor(request => request.Currency).NotEmpty().Length(3).Matches("^[A-Z]{3}$");
         RuleFor(request => request.Description).MaximumLength(4000).When(request => request.Description is not null);
+        RuleFor(request => request.HeightCm).GreaterThan(0).LessThan(1000).When(request => request.HeightCm.HasValue);
+        RuleFor(request => request.WidthCm).GreaterThan(0).LessThan(1000).When(request => request.WidthCm.HasValue);
         RuleForEach(request => request.Images).ChildRules(image =>
         {
             image.RuleFor(value => value.ImageUrl).NotEmpty().MaximumLength(2048).Must(value => Uri.IsWellFormedUriString(value, UriKind.Absolute));
             image.RuleFor(value => value.AltText).MaximumLength(250).When(value => value.AltText is not null);
+        });
+        RuleForEach(request => request.Composition).ChildRules(item =>
+        {
+            item.RuleFor(value => value.FlowerName).NotEmpty().MaximumLength(120);
+            item.RuleFor(value => value.StemCount).InclusiveBetween((short)1, (short)200);
+            item.RuleFor(value => value.Note).MaximumLength(250).When(value => value.Note is not null);
         });
     }
 }
@@ -77,6 +104,20 @@ public static class AdminEndpoints
     public static IEndpointRouteBuilder MapAdminEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/admin").RequireAuthorization("Staff");
+
+        group.MapPost("/catalog/facets", async (CreateCatalogFacetRequest request, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        {
+            var slug = request.Slug.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(slug) || slug.Length > 80 || !System.Text.RegularExpressions.Regex.IsMatch(slug, "^[a-z0-9-]+$") || string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["facet"] = ["Kind, a lowercase slug, and a name up to 120 characters are required."] });
+            }
+            if (await dbContext.CatalogFacets.AnyAsync(facet => facet.Kind == request.Kind && facet.Slug == slug, cancellationToken)) return Results.Conflict(new { error = "FacetAlreadyExists" });
+            var facet = new CatalogFacet { Id = Guid.NewGuid(), Kind = request.Kind, Slug = slug, Name = request.Name.Trim() };
+            dbContext.CatalogFacets.Add(facet);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return Results.Created($"/api/v1/catalog/facets/{facet.Id}", new { facet.Id, facet.Kind, facet.Slug, facet.Name });
+        }).WithName("CreateCatalogFacet").WithOpenApi();
 
         group.MapPost("/products", async (CreateProductRequest request, IValidator<CreateProductRequest> validator, FioreDbContext dbContext, CancellationToken cancellationToken) =>
         {
@@ -90,6 +131,8 @@ public static class AdminEndpoints
             }
 
             var now = DateTimeOffset.UtcNow;
+            var facets = await LoadFacets(dbContext, request.FacetIds, cancellationToken);
+            if (facets is null) return Results.BadRequest(new { error = "UnknownFacet" });
             var product = new Product
             {
                 Id = Guid.NewGuid(),
@@ -99,6 +142,8 @@ public static class AdminEndpoints
                 BasePrice = request.BasePrice,
                 Currency = request.Currency.Trim().ToUpperInvariant(),
                 Status = request.Status,
+                HeightCm = request.HeightCm,
+                WidthCm = request.WidthCm,
                 CreatedAt = now,
                 UpdatedAt = now,
                 Inventory = new ProductInventory
@@ -107,7 +152,9 @@ public static class AdminEndpoints
                     ReorderLevel = request.ReorderLevel,
                     UpdatedAt = now
                 },
-                Images = MapImages(request.Images, now)
+                Images = MapImages(request.Images, now),
+                Composition = MapComposition(request.Composition),
+                Facets = facets.Select(facet => new ProductFacet { FacetId = facet.Id, Facet = facet }).ToList()
             };
             dbContext.Products.Add(product);
             await dbContext.SaveChangesAsync(cancellationToken);
@@ -120,16 +167,20 @@ public static class AdminEndpoints
             var validation = await validator.ValidateAsync(request, cancellationToken);
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
 
-            var product = await dbContext.Products.Include(candidate => candidate.Inventory).Include(candidate => candidate.Images)
+            var product = await dbContext.Products.Include(candidate => candidate.Inventory).Include(candidate => candidate.Images).Include(candidate => candidate.Composition).Include(candidate => candidate.Facets)
                 .SingleOrDefaultAsync(candidate => candidate.Id == productId, cancellationToken);
             if (product is null) return Results.NotFound();
 
             var now = DateTimeOffset.UtcNow;
+            var facets = await LoadFacets(dbContext, request.FacetIds, cancellationToken);
+            if (facets is null) return Results.BadRequest(new { error = "UnknownFacet" });
             product.Name = request.Name.Trim();
             product.Description = request.Description?.Trim();
             product.BasePrice = request.BasePrice;
             product.Currency = request.Currency.Trim().ToUpperInvariant();
             product.Status = request.Status;
+            product.HeightCm = request.HeightCm;
+            product.WidthCm = request.WidthCm;
             product.UpdatedAt = now;
             product.Inventory ??= new ProductInventory { ProductId = product.Id };
             product.Inventory.QuantityAvailable = request.QuantityAvailable;
@@ -137,14 +188,20 @@ public static class AdminEndpoints
             product.Inventory.UpdatedAt = now;
             dbContext.ProductImages.RemoveRange(product.Images);
             product.Images = MapImages(request.Images, now);
+            dbContext.ProductCompositionItems.RemoveRange(product.Composition);
+            product.Composition = MapComposition(request.Composition);
+            dbContext.ProductFacets.RemoveRange(product.Facets);
+            product.Facets = facets.Select(facet => new ProductFacet { ProductId = product.Id, FacetId = facet.Id, Facet = facet }).ToList();
             await dbContext.SaveChangesAsync(cancellationToken);
 
             return Results.Ok(ToResponse(product));
         }).WithName("UpdateProduct").WithOpenApi();
 
-        group.MapGet("/orders", async (FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        group.MapGet("/orders", async (OrderStatus? status, FioreDbContext dbContext, CancellationToken cancellationToken) =>
         {
-            var orders = await dbContext.Orders.AsNoTracking().Include(order => order.Delivery)
+            var query = dbContext.Orders.AsNoTracking().Include(order => order.Delivery).Include(order => order.Payment).AsQueryable();
+            if (status.HasValue) query = query.Where(order => order.Status == status.Value);
+            var orders = await query
                 .OrderByDescending(order => order.CreatedAt)
                 .Select(order => new
                 {
@@ -155,25 +212,30 @@ public static class AdminEndpoints
                     order.TotalAmount,
                     order.Currency,
                     order.CreatedAt,
+                    payment = new { order.Payment.Status, order.Payment.Provider },
                     delivery = new { order.Delivery.City, order.Delivery.ScheduledFrom, order.Delivery.ScheduledTo }
                 }).ToListAsync(cancellationToken);
             return Results.Ok(orders);
         }).WithName("ListAdminOrders").WithOpenApi();
 
-        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, OrderLifecycleService lifecycleService, CancellationToken cancellationToken) =>
         {
-            var order = await dbContext.Orders.SingleOrDefaultAsync(candidate => candidate.Id == orderId, cancellationToken);
-            if (order is null) return Results.NotFound();
-            if (!IsValidTransition(order.Status, request.Status))
+            var result = await lifecycleService.TransitionByStaff(orderId, request.Status, cancellationToken);
+            if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
+            if (result.Error == OrderTransitionError.InvalidTransition)
             {
-                return Results.Conflict(new { error = "InvalidOrderStatusTransition", currentStatus = order.Status, requestedStatus = request.Status });
+                return Results.Conflict(new { error = "InvalidOrderStatusTransition" });
             }
-
-            order.Status = request.Status;
-            order.UpdatedAt = DateTimeOffset.UtcNow;
-            await dbContext.SaveChangesAsync(cancellationToken);
+            var order = result.Order!;
             return Results.Ok(new { order.Id, order.Status, order.UpdatedAt });
         }).WithName("UpdateOrderStatus").WithOpenApi();
+
+        group.MapPost("/orders/expire-unpaid", async (IConfiguration configuration, OrderLifecycleService lifecycleService, CancellationToken cancellationToken) =>
+        {
+            var lifetimeMinutes = Math.Max(1, configuration.GetValue("Orders:UnpaidLifetimeMinutes", 30));
+            var expired = await lifecycleService.ExpireUnpaidOrders(DateTimeOffset.UtcNow.AddMinutes(-lifetimeMinutes), cancellationToken);
+            return Results.Ok(new { expired });
+        }).WithName("ExpireUnpaidOrders").WithOpenApi();
 
         return endpoints;
     }
@@ -188,6 +250,23 @@ public static class AdminEndpoints
             CreatedAt = now
         }).ToList();
 
+    private static List<ProductCompositionItem> MapComposition(IReadOnlyList<AdminCompositionRequest>? composition) =>
+        (composition ?? []).Select((item, index) => new ProductCompositionItem
+        {
+            Id = Guid.NewGuid(),
+            FlowerName = item.FlowerName.Trim(),
+            StemCount = item.StemCount,
+            Note = item.Note?.Trim(),
+            SortOrder = checked((short)index)
+        }).ToList();
+
+    private static async Task<List<CatalogFacet>?> LoadFacets(FioreDbContext dbContext, IReadOnlyList<Guid>? facetIds, CancellationToken cancellationToken)
+    {
+        var ids = (facetIds ?? []).Distinct().ToList();
+        var facets = await dbContext.CatalogFacets.Where(facet => ids.Contains(facet.Id)).ToListAsync(cancellationToken);
+        return facets.Count == ids.Count ? facets : null;
+    }
+
     private static object ToResponse(Product product) => new
     {
         product.Id,
@@ -197,19 +276,13 @@ public static class AdminEndpoints
         product.BasePrice,
         product.Currency,
         product.Status,
+        product.HeightCm,
+        product.WidthCm,
         quantityAvailable = product.Inventory?.QuantityAvailable ?? 0,
         reorderLevel = product.Inventory?.ReorderLevel ?? 0,
-        images = product.Images.OrderBy(image => image.SortOrder).Select(image => new { image.Id, image.ImageUrl, image.AltText, image.SortOrder })
+        images = product.Images.OrderBy(image => image.SortOrder).Select(image => new { image.Id, image.ImageUrl, image.AltText, image.SortOrder }),
+        composition = product.Composition.OrderBy(item => item.SortOrder).Select(item => new { item.FlowerName, item.StemCount, item.Note, item.SortOrder }),
+        facetIds = product.Facets.Select(link => link.FacetId)
     };
 
-    private static bool IsValidTransition(OrderStatus current, OrderStatus next) => (current, next) switch
-    {
-        (OrderStatus.PendingPayment, OrderStatus.Paid or OrderStatus.Cancelled) => true,
-        (OrderStatus.Paid, OrderStatus.Accepted or OrderStatus.Cancelled) => true,
-        (OrderStatus.Accepted, OrderStatus.Assembling or OrderStatus.Cancelled) => true,
-        (OrderStatus.Assembling, OrderStatus.ReadyForDelivery or OrderStatus.Cancelled) => true,
-        (OrderStatus.ReadyForDelivery, OrderStatus.OutForDelivery or OrderStatus.Cancelled) => true,
-        (OrderStatus.OutForDelivery, OrderStatus.Delivered) => true,
-        _ => false
-    };
 }

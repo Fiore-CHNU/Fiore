@@ -21,7 +21,10 @@ public sealed record ListProductsRequest(
     decimal? MinPrice = null,
     decimal? MaxPrice = null,
     bool InStockOnly = false,
-    CatalogSort Sort = CatalogSort.Newest) : IRequest<ListProductsResponse>;
+    CatalogSort Sort = CatalogSort.Newest,
+    string? Occasion = null,
+    string? FlowerType = null,
+    string? Color = null) : IRequest<ListProductsResponse>;
 
 public sealed class ListProductsRequestValidator : AbstractValidator<ListProductsRequest>
 {
@@ -30,6 +33,9 @@ public sealed class ListProductsRequestValidator : AbstractValidator<ListProduct
         RuleFor(request => request.Page).GreaterThanOrEqualTo(1);
         RuleFor(request => request.PageSize).InclusiveBetween(1, 100);
         RuleFor(request => request.Search).MaximumLength(100).When(request => request.Search is not null);
+        RuleFor(request => request.Occasion).MaximumLength(80).When(request => request.Occasion is not null);
+        RuleFor(request => request.FlowerType).MaximumLength(80).When(request => request.FlowerType is not null);
+        RuleFor(request => request.Color).MaximumLength(80).When(request => request.Color is not null);
         RuleFor(request => request.MinPrice).GreaterThanOrEqualTo(0).When(request => request.MinPrice.HasValue);
         RuleFor(request => request.MaxPrice).GreaterThanOrEqualTo(0).When(request => request.MaxPrice.HasValue);
         RuleFor(request => request).Must(request => !request.MinPrice.HasValue || !request.MaxPrice.HasValue || request.MinPrice <= request.MaxPrice)
@@ -48,7 +54,7 @@ public sealed class ListProductsHandler(FioreDbContext dbContext) : IRequestHand
         if (!string.IsNullOrWhiteSpace(request.Search))
         {
             var search = request.Search.Trim().ToLower();
-            products = products.Where(product => product.Name.ToLower().Contains(search) || product.Sku.ToLower().Contains(search));
+            products = products.Where(product => product.Name.ToLower().Contains(search) || product.Sku.ToLower().Contains(search) || product.Composition.Any(item => item.FlowerName.ToLower().Contains(search)));
         }
 
         if (request.MinPrice.HasValue)
@@ -65,6 +71,10 @@ public sealed class ListProductsHandler(FioreDbContext dbContext) : IRequestHand
         {
             products = products.Where(product => product.Inventory != null && product.Inventory.QuantityAvailable > 0);
         }
+
+        products = ApplyFacetFilter(products, ProductFacetKind.Occasion, request.Occasion);
+        products = ApplyFacetFilter(products, ProductFacetKind.FlowerType, request.FlowerType);
+        products = ApplyFacetFilter(products, ProductFacetKind.Color, request.Color);
 
         var totalItems = await products.CountAsync(cancellationToken);
         var orderedProducts = request.Sort switch
@@ -94,6 +104,13 @@ public sealed class ListProductsHandler(FioreDbContext dbContext) : IRequestHand
                 request.PageSize,
                 totalItems,
                 (int)Math.Ceiling(totalItems / (double)request.PageSize)));
+    }
+
+    private static IQueryable<Product> ApplyFacetFilter(IQueryable<Product> products, ProductFacetKind kind, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return products;
+        var slug = value.Trim().ToLowerInvariant();
+        return products.Where(product => product.Facets.Any(link => link.Facet.Kind == kind && link.Facet.Slug == slug));
     }
 }
 

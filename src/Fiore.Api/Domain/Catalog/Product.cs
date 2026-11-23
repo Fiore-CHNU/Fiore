@@ -13,4 +13,8 @@ public sealed class Product
     public DateTimeOffset UpdatedAt { get; set; }
     public List<ProductImage> Images { get; set; } = [];
     public ProductInventory? Inventory { get; set; }
+    public decimal? HeightCm { get; set; }
+    public decimal? WidthCm { get; set; }
+    public List<ProductCompositionItem> Composition { get; set; } = [];
+    public List<ProductFacet> Facets { get; set; } = [];
 }
