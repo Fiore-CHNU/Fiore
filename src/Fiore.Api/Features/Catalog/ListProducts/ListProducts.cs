@@ -153,6 +153,7 @@ public static class ListProductsEndpoint
             return Results.Ok(await sender.Send(request, cancellationToken));
         })
         .WithName("ListCatalogProducts")
+        .CacheOutput("Catalog")
         .WithOpenApi();
 
         return endpoints;

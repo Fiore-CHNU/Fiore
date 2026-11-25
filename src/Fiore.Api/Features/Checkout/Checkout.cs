@@ -5,6 +5,7 @@ using Fiore.Api.Features.Delivery;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
 using MediatR;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace Fiore.Api.Features.Checkout;
@@ -273,6 +274,7 @@ public static class CheckoutEndpoints
             HttpRequest httpRequest,
             IValidator<CheckoutRequest> validator,
             ISender sender,
+            IOutputCacheStore outputCacheStore,
             CancellationToken cancellationToken) =>
         {
             if (!CartEndpointResults.TryGetToken(httpRequest, out var token)) return CartEndpointResults.MissingToken();
@@ -280,9 +282,14 @@ public static class CheckoutEndpoints
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
 
             var result = await sender.Send(new CheckoutCommand(request, token), cancellationToken);
+            if (result.Error is null)
+            {
+                await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
+                return Results.Created($"/api/v1/orders/{result.Order!.OrderId}", result.Order);
+            }
+
             return result.Error switch
             {
-                null => Results.Created($"/api/v1/orders/{result.Order!.OrderId}", result.Order),
                 CheckoutError.CartNotFound => Results.NotFound(),
                 CheckoutError.InvalidSession => Results.Forbid(),
                 CheckoutError.QuantityExceedsAvailability or CheckoutError.DeliverySlotUnavailable => Results.Conflict(new { error = result.Error.ToString() }),

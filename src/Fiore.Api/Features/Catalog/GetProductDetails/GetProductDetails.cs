@@ -73,6 +73,7 @@ public static class GetProductDetailsEndpoint
             return product is null ? Results.NotFound() : Results.Ok(product);
         })
         .WithName("GetCatalogProductDetails")
+        .CacheOutput("Catalog")
         .WithOpenApi();
 
         return endpoints;

@@ -18,7 +18,7 @@ public static class FacetEndpoints
                 .Select(facet => new CatalogFacetResponse(facet.Id, facet.Kind, facet.Slug, facet.Name))
                 .ToListAsync(cancellationToken);
             return Results.Ok(facets);
-        }).WithName("ListCatalogFacets").WithOpenApi();
+        }).WithName("ListCatalogFacets").CacheOutput("Catalog").WithOpenApi();
 
         return endpoints;
     }
