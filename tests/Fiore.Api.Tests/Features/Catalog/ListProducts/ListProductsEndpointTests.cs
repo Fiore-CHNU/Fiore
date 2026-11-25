@@ -5,6 +5,7 @@ using Fiore.Api.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -174,6 +175,53 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
         {
             _client.DefaultRequestHeaders.Remove("X-Cart-Token");
         }
+    }
+
+    [Fact]
+    public async Task Catalog_responses_are_cached_and_evicted_on_invalidation()
+    {
+        using var factory = new ListProductsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var initial = await client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=12");
+        initial!.Pagination.TotalItems.Should().Be(2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<FioreDbContext>();
+            var productId = Guid.NewGuid();
+            dbContext.Products.Add(new Product
+            {
+                Id = productId,
+                Sku = "FIO-CACHE-TEST",
+                Name = "Cached test bouquet",
+                BasePrice = 700,
+                Currency = "UAH",
+                Status = ProductStatus.Available,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                Inventory = new ProductInventory
+                {
+                    ProductId = productId,
+                    QuantityAvailable = 3,
+                    ReorderLevel = 1,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                }
+            });
+            await dbContext.SaveChangesAsync();
+        }
+
+        var cached = await client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=12");
+        cached!.Pagination.TotalItems.Should().Be(2);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var cacheStore = scope.ServiceProvider.GetRequiredService<IOutputCacheStore>();
+            await cacheStore.EvictByTagAsync("catalog", CancellationToken.None);
+        }
+
+        var refreshed = await client.GetFromJsonAsync<CatalogResponse>("/api/v1/catalog/products?page=1&pageSize=12");
+        refreshed!.Pagination.TotalItems.Should().Be(3);
     }
 
     private sealed record CatalogResponse(IReadOnlyList<CatalogItem> Items, PaginationResponse Pagination);

@@ -81,6 +81,8 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(product => product.Id).HasColumnName("id");
             entity.Property(product => product.Sku).HasColumnName("sku").IsRequired();
             entity.HasIndex(product => product.Sku).IsUnique();
+            entity.HasIndex(product => new { product.Status, product.CreatedAt, product.Id });
+            entity.HasIndex(product => new { product.Status, product.BasePrice, product.Id });
             entity.Property(product => product.Name).HasColumnName("name").IsRequired();
             entity.Property(product => product.Description).HasColumnName("description");
             entity.Property(product => product.BasePrice).HasColumnName("base_price").HasPrecision(12, 2);
@@ -115,6 +117,7 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.HasKey(inventory => inventory.ProductId);
             entity.Property(inventory => inventory.ProductId).HasColumnName("product_id");
             entity.Property(inventory => inventory.QuantityAvailable).HasColumnName("quantity_available");
+            entity.HasIndex(inventory => inventory.QuantityAvailable);
             entity.Property(inventory => inventory.ReorderLevel).HasColumnName("reorder_level");
             entity.Property(inventory => inventory.UpdatedAt).HasColumnName("updated_at");
         });

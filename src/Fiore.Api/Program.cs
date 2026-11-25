@@ -20,6 +20,7 @@ using System.Text.Json.Serialization;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -74,14 +75,24 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Staff", policy =
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-if (!builder.Environment.IsEnvironment("Testing") && !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Redis")))
-{
-    builder.AddRedisOutputCache("Redis");
-}
-else
-{
-    builder.Services.AddOutputCache();
-}
+    if (!builder.Environment.IsEnvironment("Testing") &&
+        !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Redis")))
+    {
+        builder.AddRedisOutputCache("Redis");
+    }
+    else
+    {
+        builder.Services.AddOutputCache();
+    }
+    builder.Services.Configure<OutputCacheOptions>(options =>
+    {
+        options.AddPolicy("Catalog", policy => policy
+            .Expire(TimeSpan.FromMinutes(5))
+            .SetVaryByQuery(["page", "pageSize", "search", "minPrice", "maxPrice", "inStockOnly",
+            "sort", "occasion", "flowerType", "color", "kind"])
+            .Tag("catalog"));
+    });
+
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 builder.Services.AddCors(options => options.AddPolicy("Frontend", policy =>

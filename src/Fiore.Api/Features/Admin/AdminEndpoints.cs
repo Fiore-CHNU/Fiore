@@ -3,6 +3,7 @@ using Fiore.Api.Domain.Commerce;
 using Fiore.Api.Features.Orders;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace Fiore.Api.Features.Admin;
@@ -105,7 +106,7 @@ public static class AdminEndpoints
     {
         var group = endpoints.MapGroup("/api/v1/admin").RequireAuthorization("Staff");
 
-        group.MapPost("/catalog/facets", async (CreateCatalogFacetRequest request, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        group.MapPost("/catalog/facets", async (CreateCatalogFacetRequest request, FioreDbContext dbContext, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var slug = request.Slug.Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(slug) || slug.Length > 80 || !System.Text.RegularExpressions.Regex.IsMatch(slug, "^[a-z0-9-]+$") || string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 120)
@@ -116,10 +117,11 @@ public static class AdminEndpoints
             var facet = new CatalogFacet { Id = Guid.NewGuid(), Kind = request.Kind, Slug = slug, Name = request.Name.Trim() };
             dbContext.CatalogFacets.Add(facet);
             await dbContext.SaveChangesAsync(cancellationToken);
+            await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
             return Results.Created($"/api/v1/catalog/facets/{facet.Id}", new { facet.Id, facet.Kind, facet.Slug, facet.Name });
         }).WithName("CreateCatalogFacet").WithOpenApi();
 
-        group.MapPost("/products", async (CreateProductRequest request, IValidator<CreateProductRequest> validator, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        group.MapPost("/products", async (CreateProductRequest request, IValidator<CreateProductRequest> validator, FioreDbContext dbContext, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var validation = await validator.ValidateAsync(request, cancellationToken);
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
@@ -158,11 +160,12 @@ public static class AdminEndpoints
             };
             dbContext.Products.Add(product);
             await dbContext.SaveChangesAsync(cancellationToken);
+            await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
 
             return Results.Created($"/api/v1/catalog/products/{product.Id}", ToResponse(product));
         }).WithName("CreateProduct").WithOpenApi();
 
-        group.MapPut("/products/{productId:guid}", async (Guid productId, UpdateProductRequest request, IValidator<UpdateProductRequest> validator, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        group.MapPut("/products/{productId:guid}", async (Guid productId, UpdateProductRequest request, IValidator<UpdateProductRequest> validator, FioreDbContext dbContext, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var validation = await validator.ValidateAsync(request, cancellationToken);
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
@@ -193,6 +196,7 @@ public static class AdminEndpoints
             dbContext.ProductFacets.RemoveRange(product.Facets);
             product.Facets = facets.Select(facet => new ProductFacet { ProductId = product.Id, FacetId = facet.Id, Facet = facet }).ToList();
             await dbContext.SaveChangesAsync(cancellationToken);
+            await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
 
             return Results.Ok(ToResponse(product));
         }).WithName("UpdateProduct").WithOpenApi();
@@ -218,7 +222,7 @@ public static class AdminEndpoints
             return Results.Ok(orders);
         }).WithName("ListAdminOrders").WithOpenApi();
 
-        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, OrderLifecycleService lifecycleService, CancellationToken cancellationToken) =>
+        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var result = await lifecycleService.TransitionByStaff(orderId, request.Status, cancellationToken);
             if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
@@ -227,13 +231,21 @@ public static class AdminEndpoints
                 return Results.Conflict(new { error = "InvalidOrderStatusTransition" });
             }
             var order = result.Order!;
+            if (order.Status == OrderStatus.Cancelled)
+            {
+                await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
+            }
             return Results.Ok(new { order.Id, order.Status, order.UpdatedAt });
         }).WithName("UpdateOrderStatus").WithOpenApi();
 
-        group.MapPost("/orders/expire-unpaid", async (IConfiguration configuration, OrderLifecycleService lifecycleService, CancellationToken cancellationToken) =>
+        group.MapPost("/orders/expire-unpaid", async (IConfiguration configuration, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var lifetimeMinutes = Math.Max(1, configuration.GetValue("Orders:UnpaidLifetimeMinutes", 30));
             var expired = await lifecycleService.ExpireUnpaidOrders(DateTimeOffset.UtcNow.AddMinutes(-lifetimeMinutes), cancellationToken);
+            if (expired > 0)
+            {
+                await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
+            }
             return Results.Ok(new { expired });
         }).WithName("ExpireUnpaidOrders").WithOpenApi();
 

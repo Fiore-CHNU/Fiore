@@ -121,6 +121,10 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("Sku")
                         .IsUnique();
 
+                    b.HasIndex("Status", "BasePrice", "Id");
+
+                    b.HasIndex("Status", "CreatedAt", "Id");
+
                     b.ToTable("products", (string)null);
                 });
 
@@ -234,6 +238,8 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at");
 
                     b.HasKey("ProductId");
+
+                    b.HasIndex("QuantityAvailable");
 
                     b.ToTable("product_inventory", (string)null);
                 });
