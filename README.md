@@ -58,16 +58,37 @@ For the React/Vite client, CORS allows the default local development and preview
 
 ## Local setup
 
-Prerequisites: .NET SDK 8, Docker Desktop, and Docker Compose.
+Prerequisites: .NET SDK 8 and Docker Desktop.
+
+### Option 1: .NET Aspire (Recommended — manages PostgreSQL, Redis, migrations, and seed data automatically)
 
 ```bash
-docker compose up -d postgres
+dotnet run --project src/Fiore.AppHost
+```
+
+Open the Aspire Dashboard URL printed in the console, or go directly to Swagger at `http://localhost:5162/swagger`.
+
+### Option 2: Docker Compose
+
+```bash
+docker compose up -d
 dotnet tool restore
 dotnet ef database update --project src/Fiore.Api
 dotnet run --project src/Fiore.Api --urls http://localhost:5090
 ```
 
-Open Swagger at `http://localhost:5090/swagger` in the Development environment. Run the test suite with:
+Open Swagger at `http://localhost:5090/swagger` in the Development environment.
+
+### Development seed accounts
+
+When running in the `Development` environment against a relational database, `FioreDbSeeder` idempotently seeds demo catalogue facets, 6 bouquets, and staff accounts for local testing:
+
+| Role | Email | Password |
+|---|---|---|
+| `administrator` | `admin@fiore.local` | `FioreAdmin123!` |
+| `manager` | `manager@fiore.local` | `FioreManager123!` |
+
+Run the test suite with:
 
 ```bash
 dotnet test
