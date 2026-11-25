@@ -1,6 +1,8 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-var postgres = builder.AddPostgres("postgres-server")
+var postgresPassword = builder.AddParameter("postgres-password", secret: true);
+
+var postgres = builder.AddPostgres("postgres-server", password: postgresPassword)
     .WithDataVolume("fiore-aspire-postgres-data")
     .AddDatabase("Postgres", "fiore");
 
