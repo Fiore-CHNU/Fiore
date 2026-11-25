@@ -50,6 +50,10 @@ public sealed class OrderDelivery
     public string? DeliveryNotes { get; set; }
     public DateTimeOffset ScheduledFrom { get; set; }
     public DateTimeOffset ScheduledTo { get; set; }
+    public Guid? CourierId { get; set; }
+    public string? CourierName { get; set; }
+    public string? CourierPhone { get; set; }
+    public DateTimeOffset? CourierAssignedAt { get; set; }
     public Order Order { get; set; } = null!;
 }
 

@@ -32,6 +32,10 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
         var order = await LoadOrder(orderId, cancellationToken);
         if (order is null) return OrderTransitionResult.Failure(OrderTransitionError.NotFound);
         if (!IsValidStaffTransition(order.Status, nextStatus)) return OrderTransitionResult.Failure(OrderTransitionError.InvalidTransition);
+        if (nextStatus == OrderStatus.OutForDelivery && string.IsNullOrWhiteSpace(order.Delivery?.CourierName))
+        {
+            return OrderTransitionResult.Failure(OrderTransitionError.CourierRequired);
+        }
 
         var now = DateTimeOffset.UtcNow;
         if (nextStatus == OrderStatus.Cancelled)
@@ -49,6 +53,53 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
         AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Cancelled by staff." : "Status updated by staff.", now);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
+    }
+
+    public async Task<OrderTransitionResult> AssignCourier(
+        Guid orderId,
+        Guid? courierId,
+        string courierName,
+        string? courierPhone,
+        CancellationToken cancellationToken)
+    {
+        var order = await LoadOrder(orderId, cancellationToken);
+        if (order is null) return OrderTransitionResult.Failure(OrderTransitionError.NotFound);
+        if (order.Status is not (OrderStatus.Assembling or OrderStatus.ReadyForDelivery) || order.Delivery is null)
+        {
+            return OrderTransitionResult.Failure(OrderTransitionError.InvalidStatusForCourier);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        order.Delivery.CourierId = courierId;
+        order.Delivery.CourierName = courierName.Trim();
+        order.Delivery.CourierPhone = string.IsNullOrWhiteSpace(courierPhone) ? null : courierPhone.Trim();
+        order.Delivery.CourierAssignedAt = now;
+        order.UpdatedAt = now;
+        AddHistory(order, order.Status, $"Courier assigned: {order.Delivery.CourierName}.", now);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return OrderTransitionResult.Success(order);
+    }
+
+    public static string FormatDeliverySummary(Order order)
+    {
+        var delivery = order.Delivery;
+        var address = string.IsNullOrWhiteSpace(delivery.Apartment)
+            ? $"{delivery.City}, {delivery.Street}, {delivery.Building}"
+            : $"{delivery.City}, {delivery.Street}, {delivery.Building}, кв. {delivery.Apartment}";
+        var slot = $"{delivery.ScheduledFrom:dd.MM.yyyy HH:mm}–{delivery.ScheduledTo:HH:mm}";
+        var lines = new List<string>
+        {
+            $"Замовлення #{order.Id:N}",
+            $"Адреса: {address}",
+            $"Слот: {slot}",
+            $"Одержувач: {delivery.RecipientName} ({delivery.RecipientPhone})"
+        };
+        if (!string.IsNullOrWhiteSpace(delivery.DeliveryNotes))
+        {
+            lines.Add($"Примітка: {delivery.DeliveryNotes}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     public async Task<int> ExpireUnpaidOrders(DateTimeOffset cutoff, CancellationToken cancellationToken)
@@ -95,6 +146,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
 
     private Task<Order?> LoadOrder(Guid orderId, CancellationToken cancellationToken) =>
         dbContext.Orders
+            .Include(order => order.Delivery)
             .Include(order => order.Payment)
             .Include(order => order.Items).ThenInclude(item => item.Product).ThenInclude(product => product.Inventory)
             .SingleOrDefaultAsync(order => order.Id == orderId, cancellationToken);
@@ -128,7 +180,7 @@ public sealed record PaymentOperationResult(Payment? Payment, OrderStatus? Order
     public static PaymentOperationResult Failure(PaymentError error) => new(null, null, error);
 }
 
-public enum OrderTransitionError { NotFound, InvalidTransition }
+public enum OrderTransitionError { NotFound, InvalidTransition, CourierRequired, InvalidStatusForCourier }
 public sealed record OrderTransitionResult(Order? Order, OrderTransitionError? Error)
 {
     public static OrderTransitionResult Success(Order order) => new(order, null);
