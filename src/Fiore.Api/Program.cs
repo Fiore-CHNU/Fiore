@@ -114,6 +114,8 @@ if (app.Environment.IsDevelopment())
     if (dbContext.Database.IsRelational())
     {
         await dbContext.Database.MigrateAsync();
+        var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<AppUser>>();
+        await FioreDbSeeder.SeedAsync(dbContext, passwordHasher);
     }
 
     app.UseSwagger();
