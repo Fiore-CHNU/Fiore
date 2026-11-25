@@ -395,6 +395,24 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("city");
 
+                    b.Property<DateTimeOffset?>("CourierAssignedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("courier_assigned_at");
+
+                    b.Property<Guid?>("CourierId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("courier_id");
+
+                    b.Property<string>("CourierName")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("courier_name");
+
+                    b.Property<string>("CourierPhone")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("courier_phone");
+
                     b.Property<string>("DeliveryNotes")
                         .HasColumnType("text")
                         .HasColumnName("delivery_notes");

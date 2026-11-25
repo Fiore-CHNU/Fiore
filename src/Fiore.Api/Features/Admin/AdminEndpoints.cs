@@ -99,6 +99,16 @@ public sealed class UpdateProductRequestValidator : AbstractValidator<UpdateProd
 }
 
 public sealed record UpdateOrderStatusRequest(OrderStatus Status);
+public sealed record AssignCourierRequest(string CourierName, string? CourierPhone = null, Guid? CourierId = null);
+
+public sealed class AssignCourierRequestValidator : AbstractValidator<AssignCourierRequest>
+{
+    public AssignCourierRequestValidator()
+    {
+        RuleFor(request => request.CourierName).NotEmpty().MaximumLength(120);
+        RuleFor(request => request.CourierPhone).MaximumLength(32).When(request => request.CourierPhone is not null);
+    }
+}
 
 public static class AdminEndpoints
 {
@@ -217,15 +227,81 @@ public static class AdminEndpoints
                     order.Currency,
                     order.CreatedAt,
                     payment = new { order.Payment.Status, order.Payment.Provider },
-                    delivery = new { order.Delivery.City, order.Delivery.ScheduledFrom, order.Delivery.ScheduledTo }
+                    delivery = new
+                    {
+                        order.Delivery.City,
+                        order.Delivery.ScheduledFrom,
+                        order.Delivery.ScheduledTo,
+                        order.Delivery.CourierId,
+                        order.Delivery.CourierName,
+                        order.Delivery.CourierPhone,
+                        order.Delivery.CourierAssignedAt,
+                        canMoveToOutForDelivery = !string.IsNullOrWhiteSpace(order.Delivery.CourierName)
+                    }
                 }).ToListAsync(cancellationToken);
             return Results.Ok(orders);
         }).WithName("ListAdminOrders").WithOpenApi();
+
+        group.MapPut("/orders/{orderId:guid}/courier", async (
+            Guid orderId,
+            AssignCourierRequest request,
+            IValidator<AssignCourierRequest> validator,
+            OrderLifecycleService lifecycleService,
+            CancellationToken cancellationToken) =>
+        {
+            var validation = await validator.ValidateAsync(request, cancellationToken);
+            if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
+
+            var result = await lifecycleService.AssignCourier(orderId, request.CourierId, request.CourierName, request.CourierPhone, cancellationToken);
+            if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
+            if (result.Error == OrderTransitionError.InvalidStatusForCourier)
+            {
+                return Results.Conflict(new { error = "InvalidOrderStatusForCourierAssignment" });
+            }
+
+            var order = result.Order!;
+            return Results.Ok(new
+            {
+                orderId = order.Id,
+                order.Status,
+                order.Delivery.CourierId,
+                order.Delivery.CourierName,
+                order.Delivery.CourierPhone,
+                assignedAt = order.Delivery.CourierAssignedAt,
+                canMoveToOutForDelivery = true,
+                deliverySummaryText = OrderLifecycleService.FormatDeliverySummary(order)
+            });
+        }).WithName("AssignOrderCourier").WithOpenApi();
+
+        group.MapGet("/orders/{orderId:guid}/delivery-summary", async (Guid orderId, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        {
+            var order = await dbContext.Orders.AsNoTracking()
+                .Include(candidate => candidate.Delivery)
+                .SingleOrDefaultAsync(candidate => candidate.Id == orderId, cancellationToken);
+            if (order?.Delivery is null) return Results.NotFound();
+            if (string.IsNullOrWhiteSpace(order.Delivery.CourierName))
+            {
+                return Results.Conflict(new { error = "CourierRequired", message = "Спочатку вкажіть кур'єра для замовлення." });
+            }
+
+            return Results.Ok(new
+            {
+                orderId = order.Id,
+                order.Delivery.CourierId,
+                order.Delivery.CourierName,
+                order.Delivery.CourierPhone,
+                text = OrderLifecycleService.FormatDeliverySummary(order)
+            });
+        }).WithName("GetOrderDeliverySummary").WithOpenApi();
 
         group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             var result = await lifecycleService.TransitionByStaff(orderId, request.Status, cancellationToken);
             if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
+            if (result.Error == OrderTransitionError.CourierRequired)
+            {
+                return Results.Conflict(new { error = "CourierRequired", message = "Спочатку вкажіть кур'єра для замовлення." });
+            }
             if (result.Error == OrderTransitionError.InvalidTransition)
             {
                 return Results.Conflict(new { error = "InvalidOrderStatusTransition" });

@@ -234,6 +234,10 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(delivery => delivery.DeliveryNotes).HasColumnName("delivery_notes");
             entity.Property(delivery => delivery.ScheduledFrom).HasColumnName("scheduled_from");
             entity.Property(delivery => delivery.ScheduledTo).HasColumnName("scheduled_to");
+            entity.Property(delivery => delivery.CourierId).HasColumnName("courier_id");
+            entity.Property(delivery => delivery.CourierName).HasColumnName("courier_name").HasMaxLength(120);
+            entity.Property(delivery => delivery.CourierPhone).HasColumnName("courier_phone").HasMaxLength(32);
+            entity.Property(delivery => delivery.CourierAssignedAt).HasColumnName("courier_assigned_at");
             entity.HasIndex(delivery => delivery.ScheduledFrom);
         });
 
