@@ -1,5 +1,7 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using System.Security.Claims;
+using Fiore.Api.Features.Common;
 using Fiore.Api.Features.Orders;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
@@ -24,7 +26,8 @@ public sealed record CreateProductRequest(
     decimal? HeightCm = null,
     decimal? WidthCm = null,
     IReadOnlyList<AdminCompositionRequest>? Composition = null,
-    IReadOnlyList<Guid>? FacetIds = null);
+    IReadOnlyList<Guid>? FacetIds = null,
+    string? Packaging = null);
 public sealed record UpdateProductRequest(
     string Name,
     decimal BasePrice,
@@ -37,7 +40,8 @@ public sealed record UpdateProductRequest(
     decimal? HeightCm = null,
     decimal? WidthCm = null,
     IReadOnlyList<AdminCompositionRequest>? Composition = null,
-    IReadOnlyList<Guid>? FacetIds = null);
+    IReadOnlyList<Guid>? FacetIds = null,
+    string? Packaging = null);
 
 public sealed class CreateProductRequestValidator : AbstractValidator<CreateProductRequest>
 {
@@ -50,6 +54,7 @@ public sealed class CreateProductRequestValidator : AbstractValidator<CreateProd
     private void AddCommonRules()
     {
         RuleFor(request => request.Name).NotEmpty().MaximumLength(180);
+        RuleFor(request => request.Packaging).MaximumLength(500).When(request => request.Packaging is not null);
         RuleFor(request => request.BasePrice).GreaterThanOrEqualTo(0).LessThan(1_000_000);
         RuleFor(request => request.QuantityAvailable).GreaterThanOrEqualTo(0);
         RuleFor(request => request.ReorderLevel).GreaterThanOrEqualTo(0);
@@ -77,6 +82,7 @@ public sealed class UpdateProductRequestValidator : AbstractValidator<UpdateProd
     public UpdateProductRequestValidator()
     {
         RuleFor(request => request.Name).NotEmpty().MaximumLength(180);
+        RuleFor(request => request.Packaging).MaximumLength(500).When(request => request.Packaging is not null);
         RuleFor(request => request.BasePrice).GreaterThanOrEqualTo(0).LessThan(1_000_000);
         RuleFor(request => request.QuantityAvailable).GreaterThanOrEqualTo(0);
         RuleFor(request => request.ReorderLevel).GreaterThanOrEqualTo(0);
@@ -99,6 +105,7 @@ public sealed class UpdateProductRequestValidator : AbstractValidator<UpdateProd
 }
 
 public sealed record UpdateOrderStatusRequest(OrderStatus Status);
+public sealed record UpdateProductAvailabilityRequest(bool IsAvailable);
 public sealed record AssignCourierRequest(string CourierName, string? CourierPhone = null, Guid? CourierId = null);
 
 public sealed class AssignCourierRequestValidator : AbstractValidator<AssignCourierRequest>
@@ -106,7 +113,8 @@ public sealed class AssignCourierRequestValidator : AbstractValidator<AssignCour
     public AssignCourierRequestValidator()
     {
         RuleFor(request => request.CourierName).NotEmpty().MaximumLength(120);
-        RuleFor(request => request.CourierPhone).MaximumLength(32).When(request => request.CourierPhone is not null);
+        RuleFor(request => request.CourierPhone).Must(CommerceRules.IsValidPhone).WithMessage(CommerceRules.PhoneFormatMessage)
+            .When(request => !string.IsNullOrWhiteSpace(request.CourierPhone));
     }
 }
 
@@ -156,6 +164,7 @@ public static class AdminEndpoints
                 Status = request.Status,
                 HeightCm = request.HeightCm,
                 WidthCm = request.WidthCm,
+                Packaging = request.Packaging?.Trim(),
                 CreatedAt = now,
                 UpdatedAt = now,
                 Inventory = new ProductInventory
@@ -194,6 +203,7 @@ public static class AdminEndpoints
             product.Status = request.Status;
             product.HeightCm = request.HeightCm;
             product.WidthCm = request.WidthCm;
+            product.Packaging = request.Packaging?.Trim();
             product.UpdatedAt = now;
             product.Inventory ??= new ProductInventory { ProductId = product.Id };
             product.Inventory.QuantityAvailable = request.QuantityAvailable;
@@ -211,10 +221,50 @@ public static class AdminEndpoints
             return Results.Ok(ToResponse(product));
         }).WithName("UpdateProduct").WithOpenApi();
 
-        group.MapGet("/orders", async (OrderStatus? status, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        // US-8.3: one-click "out of stock" switch; the product stays visible with an unavailable label.
+        group.MapPut("/products/{productId:guid}/availability", async (Guid productId, UpdateProductAvailabilityRequest request, FioreDbContext dbContext, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
-            var query = dbContext.Orders.AsNoTracking().Include(order => order.Delivery).Include(order => order.Payment).AsQueryable();
-            if (status.HasValue) query = query.Where(order => order.Status == status.Value);
+            var product = await dbContext.Products.Include(candidate => candidate.Inventory).SingleOrDefaultAsync(candidate => candidate.Id == productId, cancellationToken);
+            if (product is null) return Results.NotFound();
+
+            product.IsTemporarilyUnavailable = !request.IsAvailable;
+            product.UpdatedAt = DateTimeOffset.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
+            return Results.Ok(new
+            {
+                product.Id,
+                product.IsTemporarilyUnavailable,
+                isAvailable = CommerceRules.IsOrderable(product),
+                quantityAvailable = product.Inventory?.QuantityAvailable ?? 0
+            });
+        }).WithName("UpdateProductAvailability").WithOpenApi();
+
+        // US-9.1: the order queue. Unpaid orders are hidden unless explicitly requested; the client polls this endpoint.
+        group.MapGet("/orders", async (string? status, DateOnly? deliveryDate, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        {
+            // Accept the same camelCase values the API returns (e.g. "pendingPayment"); minimal-API enum binding is case-sensitive.
+            OrderStatus? statusFilter = null;
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                if (!Enum.TryParse<OrderStatus>(status, ignoreCase: true, out var parsed) || !Enum.IsDefined(parsed))
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Unknown order status."] });
+                }
+                statusFilter = parsed;
+            }
+
+            var query = dbContext.Orders.AsNoTracking().AsQueryable();
+            query = statusFilter.HasValue
+                ? query.Where(order => order.Status == statusFilter.Value)
+                : query.Where(order => order.Status != OrderStatus.PendingPayment);
+            if (deliveryDate.HasValue)
+            {
+                var dayStart = KyivDayStart(deliveryDate.Value);
+                var dayEnd = KyivDayStart(deliveryDate.Value.AddDays(1));
+                query = query.Where(order => order.Delivery.ScheduledFrom >= dayStart && order.Delivery.ScheduledFrom < dayEnd);
+            }
+
             var orders = await query
                 .OrderByDescending(order => order.CreatedAt)
                 .Select(order => new
@@ -229,6 +279,7 @@ public static class AdminEndpoints
                     payment = new { order.Payment.Status, order.Payment.Provider },
                     delivery = new
                     {
+                        order.Delivery.RecipientName,
                         order.Delivery.City,
                         order.Delivery.ScheduledFrom,
                         order.Delivery.ScheduledTo,
@@ -239,8 +290,70 @@ public static class AdminEndpoints
                         canMoveToOutForDelivery = !string.IsNullOrWhiteSpace(order.Delivery.CourierName)
                     }
                 }).ToListAsync(cancellationToken);
-            return Results.Ok(orders);
+            return Results.Ok(orders.Select(order => new
+            {
+                order.Id,
+                orderNumber = CommerceRules.OrderNumber(order.Id),
+                order.Status,
+                order.ContactName,
+                order.ContactPhone,
+                order.TotalAmount,
+                order.Currency,
+                order.CreatedAt,
+                order.payment,
+                order.delivery
+            }));
         }).WithName("ListAdminOrders").WithOpenApi();
+
+        // US-9.2 / US-9.3: order card with status history and the greeting-card text for printing.
+        group.MapGet("/orders/{orderId:guid}", async (Guid orderId, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        {
+            var order = await dbContext.Orders.AsNoTracking()
+                .Include(candidate => candidate.Items)
+                .Include(candidate => candidate.Delivery)
+                .Include(candidate => candidate.Payment)
+                .Include(candidate => candidate.StatusHistory)
+                .SingleOrDefaultAsync(candidate => candidate.Id == orderId, cancellationToken);
+            if (order?.Delivery is null) return Results.NotFound();
+
+            return Results.Ok(new
+            {
+                order.Id,
+                orderNumber = CommerceRules.OrderNumber(order.Id),
+                order.Status,
+                order.ContactName,
+                order.ContactEmail,
+                order.ContactPhone,
+                order.SubtotalAmount,
+                order.DeliveryFeeAmount,
+                order.TotalAmount,
+                order.Currency,
+                order.CustomerNote,
+                order.CardMessage,
+                order.CreatedAt,
+                order.UpdatedAt,
+                items = order.Items.Select(item => new { item.ProductId, item.ProductName, item.ProductSku, item.UnitPrice, item.Quantity, item.LineTotal }),
+                delivery = new
+                {
+                    order.Delivery.RecipientName,
+                    order.Delivery.RecipientPhone,
+                    order.Delivery.City,
+                    order.Delivery.Street,
+                    order.Delivery.Building,
+                    order.Delivery.Apartment,
+                    order.Delivery.DeliveryNotes,
+                    order.Delivery.CallBeforeDelivery,
+                    order.Delivery.ScheduledFrom,
+                    order.Delivery.ScheduledTo,
+                    order.Delivery.CourierId,
+                    order.Delivery.CourierName,
+                    order.Delivery.CourierPhone,
+                    order.Delivery.CourierAssignedAt
+                },
+                payment = order.Payment is null ? null : new { order.Payment.Provider, order.Payment.Status, order.Payment.Amount, order.Payment.Currency, order.Payment.CompletedAt },
+                statusHistory = order.StatusHistory.OrderBy(history => history.ChangedAt).Select(history => new { history.Status, history.Note, history.ChangedBy, history.ChangedAt })
+            });
+        }).WithName("GetAdminOrder").WithOpenApi();
 
         group.MapPut("/orders/{orderId:guid}/courier", async (
             Guid orderId,
@@ -294,9 +407,9 @@ public static class AdminEndpoints
             });
         }).WithName("GetOrderDeliverySummary").WithOpenApi();
 
-        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
+        group.MapPut("/orders/{orderId:guid}/status", async (Guid orderId, UpdateOrderStatusRequest request, ClaimsPrincipal principal, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
-            var result = await lifecycleService.TransitionByStaff(orderId, request.Status, cancellationToken);
+            var result = await lifecycleService.TransitionByStaff(orderId, request.Status, principal.FindFirstValue(ClaimTypes.Email), cancellationToken);
             if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
             if (result.Error == OrderTransitionError.CourierRequired)
             {
@@ -314,10 +427,9 @@ public static class AdminEndpoints
             return Results.Ok(new { order.Id, order.Status, order.UpdatedAt });
         }).WithName("UpdateOrderStatus").WithOpenApi();
 
-        group.MapPost("/orders/expire-unpaid", async (IConfiguration configuration, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
+        group.MapPost("/orders/expire-unpaid", async (OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
-            var lifetimeMinutes = Math.Max(1, configuration.GetValue("Orders:UnpaidLifetimeMinutes", 30));
-            var expired = await lifecycleService.ExpireUnpaidOrders(DateTimeOffset.UtcNow.AddMinutes(-lifetimeMinutes), cancellationToken);
+            var expired = await lifecycleService.ExpireUnpaidOrders(lifecycleService.UnpaidCutoff(), cancellationToken);
             if (expired > 0)
             {
                 await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
@@ -326,6 +438,12 @@ public static class AdminEndpoints
         }).WithName("ExpireUnpaidOrders").WithOpenApi();
 
         return endpoints;
+    }
+
+    private static DateTimeOffset KyivDayStart(DateOnly date)
+    {
+        var local = date.ToDateTime(TimeOnly.MinValue);
+        return new DateTimeOffset(local, CommerceRules.KyivTimeZone.GetUtcOffset(local)).ToUniversalTime();
     }
 
     private static List<ProductImage> MapImages(IReadOnlyList<AdminProductImageRequest>? images, DateTimeOffset now) =>
@@ -366,6 +484,8 @@ public static class AdminEndpoints
         product.Status,
         product.HeightCm,
         product.WidthCm,
+        product.Packaging,
+        product.IsTemporarilyUnavailable,
         quantityAvailable = product.Inventory?.QuantityAvailable ?? 0,
         reorderLevel = product.Inventory?.ReorderLevel ?? 0,
         images = product.Images.OrderBy(image => image.SortOrder).Select(image => new { image.Id, image.ImageUrl, image.AltText, image.SortOrder }),

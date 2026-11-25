@@ -9,6 +9,8 @@ public sealed class Product
     public decimal BasePrice { get; set; }
     public string Currency { get; set; } = "UAH";
     public ProductStatus Status { get; set; } = ProductStatus.Available;
+    public bool IsTemporarilyUnavailable { get; set; }
+    public string? Packaging { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public List<ProductImage> Images { get; set; } = [];

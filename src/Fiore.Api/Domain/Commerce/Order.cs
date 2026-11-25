@@ -6,6 +6,7 @@ public sealed class Order
 {
     public Guid Id { get; set; }
     public Guid SourceCartId { get; set; }
+    public string TrackingCode { get; set; } = null!;
     public string ContactName { get; set; } = null!;
     public string ContactEmail { get; set; } = null!;
     public string ContactPhone { get; set; } = null!;
@@ -48,6 +49,7 @@ public sealed class OrderDelivery
     public string Building { get; set; } = null!;
     public string? Apartment { get; set; }
     public string? DeliveryNotes { get; set; }
+    public bool CallBeforeDelivery { get; set; }
     public DateTimeOffset ScheduledFrom { get; set; }
     public DateTimeOffset ScheduledTo { get; set; }
     public Guid? CourierId { get; set; }
@@ -78,6 +80,7 @@ public sealed class OrderStatusHistory
     public Guid OrderId { get; set; }
     public OrderStatus Status { get; set; }
     public string? Note { get; set; }
+    public string? ChangedBy { get; set; }
     public DateTimeOffset ChangedAt { get; set; }
     public Order Order { get; set; } = null!;
 }

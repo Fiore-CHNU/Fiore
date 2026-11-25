@@ -1,4 +1,5 @@
 using Fiore.Api.Domain.Catalog;
+using Fiore.Api.Features.Common;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
 using MediatR;
@@ -69,7 +70,7 @@ public sealed class ListProductsHandler(FioreDbContext dbContext) : IRequestHand
 
         if (request.InStockOnly)
         {
-            products = products.Where(product => product.Inventory != null && product.Inventory.QuantityAvailable > 0);
+            products = products.Where(CommerceRules.IsOrderableExpression);
         }
 
         products = ApplyFacetFilter(products, ProductFacetKind.Occasion, request.Occasion);
@@ -94,7 +95,7 @@ public sealed class ListProductsHandler(FioreDbContext dbContext) : IRequestHand
                 product.BasePrice,
                 product.Currency,
                 product.Images.OrderBy(image => image.SortOrder).Select(image => image.ImageUrl).FirstOrDefault(),
-                product.Inventory != null && product.Inventory.QuantityAvailable > 0))
+                !product.IsTemporarilyUnavailable && product.Inventory != null && product.Inventory.QuantityAvailable > 0))
             .ToListAsync(cancellationToken);
 
         return new ListProductsResponse(

@@ -1,6 +1,7 @@
 using Fiore.Api.Features.Carts;
 using Fiore.Api.Features.Orders;
 using Fiore.Api.Domain.Commerce;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace Fiore.Api.Features.Payments;
 
@@ -10,10 +11,15 @@ public static class PaymentEndpoints
 {
     public static IEndpointRouteBuilder MapPaymentEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost("/api/v1/orders/{orderId:guid}/payments/sandbox/confirm", async (Guid orderId, HttpRequest httpRequest, OrderLifecycleService lifecycleService, CancellationToken cancellationToken) =>
+        endpoints.MapPost("/api/v1/orders/{orderId:guid}/payments/sandbox/confirm", async (Guid orderId, HttpRequest httpRequest, OrderLifecycleService lifecycleService, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
             if (!CartEndpointResults.TryGetToken(httpRequest, out var token)) return CartEndpointResults.MissingToken();
             var result = await lifecycleService.ConfirmSandboxPayment(orderId, token, cancellationToken);
+            if (result.Error == PaymentError.PaymentWindowExpired)
+            {
+                // The late attempt may have just expired the order and returned its stock.
+                await outputCacheStore.EvictByTagAsync("catalog", cancellationToken);
+            }
             return result.Error switch
             {
                 null => Results.Ok(ToResponse(result.Payment!, result.OrderStatus!.Value)),

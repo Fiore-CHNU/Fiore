@@ -24,7 +24,7 @@ Accept: application/json
 
 ###
 
-GET {{Fiore_Api_HostAddress}}/api/v1/delivery/slots?date=2026-11-24
+GET {{Fiore_Api_HostAddress}}/api/v1/delivery/slots
 Accept: application/json
 
 ###
@@ -59,9 +59,24 @@ Content-Type: application/json
   "city": "Chernivtsi",
   "street": "Main Street",
   "building": "1",
-  "scheduledFrom": "2026-11-20T10:00:00+02:00",
-  "scheduledTo": "2026-11-20T12:00:00+02:00"
+  "scheduledFrom": "2026-12-01T12:00:00+02:00",
+  "scheduledTo": "2026-12-01T14:00:00+02:00",
+  "cardMessage": "Happy birthday!",
+  "callBeforeDelivery": true
 }
+
+### Confirm new prices after a 409 PriceChanged checkout response
+
+POST {{Fiore_Api_HostAddress}}/api/v1/carts/{{CartId}}/accept-prices
+X-Cart-Token: {{CartToken}}
+
+### Public order-status link (trackingCode from the checkout response)
+
+GET {{Fiore_Api_HostAddress}}/api/v1/orders/track/replace-with-tracking-code
+
+### Similar bouquets
+
+GET {{Fiore_Api_HostAddress}}/api/v1/catalog/products/{{ProductId}}/similar?limit=4
 
 ###
 

@@ -51,9 +51,10 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
         var response = await _client.GetAsync($"/api/v1/delivery/slots?date={tomorrow:yyyy-MM-dd}");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var slots = await response.Content.ReadFromJsonAsync<IReadOnlyList<DeliverySlotResponse>>();
-        slots.Should().HaveCount(5);
-        slots!.Should().OnlyContain(slot => slot.RemainingCapacity >= 0 && slot.RemainingCapacity <= 10 && slot.FeeAmount == 120m);
+        var document = await response.Content.ReadFromJsonAsync<DeliverySlotsResponse>();
+        document!.Date.Should().Be(tomorrow);
+        document.Slots.Should().HaveCount(5);
+        document.Slots.Should().OnlyContain(slot => slot.RemainingCapacity >= 0 && slot.RemainingCapacity <= 10 && slot.FeeAmount == 100m);
     }
 
     [Fact]
@@ -108,7 +109,7 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
             var order = await checkoutResponse.Content.ReadFromJsonAsync<CheckoutResponse>();
             order.Should().NotBeNull();
             order!.Status.Should().Be("pendingPayment");
-            order.TotalAmount.Should().Be(1120);
+            order.TotalAmount.Should().Be(1100);
 
             var orderResponse = await _client.GetAsync($"/api/v1/orders/{order.OrderId}");
             orderResponse.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -236,6 +237,7 @@ public sealed class ListProductsEndpointTests : IClassFixture<ListProductsWebApp
     private sealed record PersistedPayment(string Status);
     private sealed record PersistedStatusHistory(string Status);
     private sealed record PaymentResponse(string PaymentStatus, string OrderStatus);
+    private sealed record DeliverySlotsResponse(DateOnly Date, IReadOnlyList<DeliverySlotResponse> Slots);
     private sealed record DeliverySlotResponse(int RemainingCapacity, decimal FeeAmount);
     private sealed record PaginationResponse(int Page, int PageSize, int TotalItems, int TotalPages);
 }
