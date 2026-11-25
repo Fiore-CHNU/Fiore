@@ -1,5 +1,7 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using Fiore.Api.Features.Common;
+using Fiore.Api.Features.Delivery;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
 using MediatR;
@@ -7,8 +9,25 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Fiore.Api.Features.Carts;
 
-public sealed record CartResponse(Guid Id, Guid SessionToken, CartStatus Status, IReadOnlyList<CartItemResponse> Items, decimal TotalAmount, string Currency);
-public sealed record CartItemResponse(Guid ProductId, string Sku, string Name, decimal UnitPrice, string Currency, string? ImageUrl, bool IsAvailable, int Quantity, decimal LineTotal);
+public sealed record CartResponse(
+    Guid Id,
+    Guid SessionToken,
+    CartStatus Status,
+    IReadOnlyList<CartItemResponse> Items,
+    decimal SubtotalAmount,
+    decimal DeliveryFeeAmount,
+    decimal TotalAmount,
+    decimal MinimumOrderAmount,
+    bool MeetsMinimumOrder,
+    bool HasPriceChanges,
+    bool HasUnavailableItems,
+    string Currency);
+
+/// <summary>
+/// <paramref name="UnitPrice"/> is the current catalogue price; <paramref name="AcceptedUnitPrice"/> is the price the customer saw
+/// when adding the item. When they differ, checkout returns 409 until the customer accepts the new prices (US-4.5).
+/// </summary>
+public sealed record CartItemResponse(Guid ProductId, string Sku, string Name, decimal UnitPrice, decimal AcceptedUnitPrice, bool PriceChanged, string Currency, string? ImageUrl, bool IsAvailable, int Quantity, decimal LineTotal);
 public sealed record AddCartItemRequest(Guid ProductId, int Quantity);
 public sealed record UpdateCartItemRequest(int Quantity);
 public sealed record AddCartItemCommand(Guid CartId, Guid SessionToken, Guid ProductId, int Quantity) : IRequest<CartOperationResult>;
@@ -16,6 +35,7 @@ public sealed record UpdateCartItemCommand(Guid CartId, Guid SessionToken, Guid 
 public sealed record GetCartRequest(Guid CartId, Guid SessionToken) : IRequest<CartOperationResult>;
 public sealed record RemoveCartItemRequest(Guid CartId, Guid ProductId, Guid SessionToken) : IRequest<CartOperationResult>;
 public sealed record CreateCartRequest : IRequest<CartResponse>;
+public sealed record AcceptCartPricesCommand(Guid CartId, Guid SessionToken) : IRequest<CartOperationResult>;
 
 public enum CartError
 {
@@ -29,11 +49,11 @@ public enum CartError
 
 public sealed record CartOperationResult(CartResponse? Cart, CartError? Error)
 {
-    public static CartOperationResult Success(Cart cart) => new(CartMapper.ToResponse(cart), null);
+    public static CartOperationResult Success(Cart cart, DeliveryOptions options) => new(CartMapper.ToResponse(cart, options), null);
     public static CartOperationResult Failure(CartError error) => new(null, error);
 }
 
-public sealed class CreateCartHandler(FioreDbContext dbContext) : IRequestHandler<CreateCartRequest, CartResponse>
+public sealed class CreateCartHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<CreateCartRequest, CartResponse>
 {
     public async Task<CartResponse> Handle(CreateCartRequest request, CancellationToken cancellationToken)
     {
@@ -49,22 +69,22 @@ public sealed class CreateCartHandler(FioreDbContext dbContext) : IRequestHandle
 
         dbContext.Carts.Add(cart);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return CartMapper.ToResponse(cart);
+        return CartMapper.ToResponse(cart, options);
     }
 }
 
-public sealed class GetCartHandler(FioreDbContext dbContext) : IRequestHandler<GetCartRequest, CartOperationResult>
+public sealed class GetCartHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<GetCartRequest, CartOperationResult>
 {
     public async Task<CartOperationResult> Handle(GetCartRequest request, CancellationToken cancellationToken)
     {
         var cart = await CartMapper.LoadCart(dbContext, request.CartId, cancellationToken);
         return CartMapper.ValidateSession(cart, request.SessionToken) is { } error
             ? CartOperationResult.Failure(error)
-            : CartOperationResult.Success(cart!);
+            : CartOperationResult.Success(cart!, options);
     }
 }
 
-public sealed class AddCartItemHandler(FioreDbContext dbContext) : IRequestHandler<AddCartItemCommand, CartOperationResult>
+public sealed class AddCartItemHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<AddCartItemCommand, CartOperationResult>
 {
     public async Task<CartOperationResult> Handle(AddCartItemCommand request, CancellationToken cancellationToken)
     {
@@ -76,16 +96,16 @@ public sealed class AddCartItemHandler(FioreDbContext dbContext) : IRequestHandl
 
         var product = await dbContext.Products
             .Include(item => item.Inventory)
-            .FirstOrDefaultAsync(item => item.Id == request.ProductId && item.Status == ProductStatus.Available, cancellationToken);
+            .FirstOrDefaultAsync(item => item.Id == request.ProductId, cancellationToken);
 
-        if (product?.Inventory is null || product.Inventory.QuantityAvailable <= 0)
+        if (product is null || !CommerceRules.IsOrderable(product))
         {
             return CartOperationResult.Failure(CartError.ProductNotAvailable);
         }
 
         var existingItem = cart!.Items.SingleOrDefault(item => item.ProductId == request.ProductId);
         var requestedQuantity = (existingItem?.Quantity ?? 0) + request.Quantity;
-        if (requestedQuantity > product.Inventory.QuantityAvailable)
+        if (requestedQuantity > product.Inventory!.QuantityAvailable)
         {
             return CartOperationResult.Failure(CartError.QuantityExceedsAvailability);
         }
@@ -98,6 +118,7 @@ public sealed class AddCartItemHandler(FioreDbContext dbContext) : IRequestHandl
                 ProductId = product.Id,
                 Product = product,
                 Quantity = request.Quantity,
+                UnitPrice = product.BasePrice,
                 AddedAt = DateTimeOffset.UtcNow
             });
         }
@@ -108,11 +129,11 @@ public sealed class AddCartItemHandler(FioreDbContext dbContext) : IRequestHandl
 
         cart.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
-        return CartOperationResult.Success(cart);
+        return CartOperationResult.Success(cart, options);
     }
 }
 
-public sealed class UpdateCartItemHandler(FioreDbContext dbContext) : IRequestHandler<UpdateCartItemCommand, CartOperationResult>
+public sealed class UpdateCartItemHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<UpdateCartItemCommand, CartOperationResult>
 {
     public async Task<CartOperationResult> Handle(UpdateCartItemCommand request, CancellationToken cancellationToken)
     {
@@ -128,12 +149,12 @@ public sealed class UpdateCartItemHandler(FioreDbContext dbContext) : IRequestHa
             return CartOperationResult.Failure(CartError.ItemNotFound);
         }
 
-        if (item.Product.Status != ProductStatus.Available || item.Product.Inventory is null || item.Product.Inventory.QuantityAvailable <= 0)
+        if (!CommerceRules.IsOrderable(item.Product))
         {
             return CartOperationResult.Failure(CartError.ProductNotAvailable);
         }
 
-        if (request.Quantity > item.Product.Inventory.QuantityAvailable)
+        if (request.Quantity > item.Product.Inventory!.QuantityAvailable)
         {
             return CartOperationResult.Failure(CartError.QuantityExceedsAvailability);
         }
@@ -141,11 +162,11 @@ public sealed class UpdateCartItemHandler(FioreDbContext dbContext) : IRequestHa
         item.Quantity = request.Quantity;
         cart.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
-        return CartOperationResult.Success(cart);
+        return CartOperationResult.Success(cart, options);
     }
 }
 
-public sealed class RemoveCartItemHandler(FioreDbContext dbContext) : IRequestHandler<RemoveCartItemRequest, CartOperationResult>
+public sealed class RemoveCartItemHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<RemoveCartItemRequest, CartOperationResult>
 {
     public async Task<CartOperationResult> Handle(RemoveCartItemRequest request, CancellationToken cancellationToken)
     {
@@ -165,7 +186,28 @@ public sealed class RemoveCartItemHandler(FioreDbContext dbContext) : IRequestHa
         cart.Items.Remove(item);
         cart.UpdatedAt = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
-        return CartOperationResult.Success(cart);
+        return CartOperationResult.Success(cart, options);
+    }
+}
+
+public sealed class AcceptCartPricesHandler(FioreDbContext dbContext, DeliveryOptions options) : IRequestHandler<AcceptCartPricesCommand, CartOperationResult>
+{
+    public async Task<CartOperationResult> Handle(AcceptCartPricesCommand request, CancellationToken cancellationToken)
+    {
+        var cart = await CartMapper.LoadCart(dbContext, request.CartId, cancellationToken);
+        if (CartMapper.ValidateSession(cart, request.SessionToken) is { } error)
+        {
+            return CartOperationResult.Failure(error);
+        }
+
+        foreach (var item in cart!.Items)
+        {
+            item.UnitPrice = item.Product.BasePrice;
+        }
+
+        cart.UpdatedAt = DateTimeOffset.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return CartOperationResult.Success(cart, options);
     }
 }
 
@@ -201,7 +243,7 @@ internal static class CartMapper
         return cart.Status == CartStatus.Active ? null : CartError.Inactive;
     }
 
-    public static CartResponse ToResponse(Cart cart)
+    public static CartResponse ToResponse(Cart cart, DeliveryOptions options)
     {
         var items = cart.Items
             .OrderBy(item => item.AddedAt)
@@ -210,14 +252,31 @@ internal static class CartMapper
                 item.Product.Sku,
                 item.Product.Name,
                 item.Product.BasePrice,
+                item.UnitPrice,
+                item.UnitPrice != item.Product.BasePrice,
                 item.Product.Currency,
                 item.Product.Images.OrderBy(image => image.SortOrder).Select(image => image.ImageUrl).FirstOrDefault(),
-                item.Product.Status == ProductStatus.Available && item.Product.Inventory is { QuantityAvailable: > 0 },
+                CommerceRules.IsOrderable(item.Product),
                 item.Quantity,
                 item.Product.BasePrice * item.Quantity))
             .ToList();
 
-        return new CartResponse(cart.Id, cart.SessionToken, cart.Status, items, items.Sum(item => item.LineTotal), items.FirstOrDefault()?.Currency ?? "UAH");
+        // Totals count only items that can still be ordered, so the customer sees what checkout would charge.
+        var subtotal = items.Where(item => item.IsAvailable).Sum(item => item.LineTotal);
+        var deliveryFee = subtotal == 0 ? 0 : subtotal >= options.FreeDeliveryFromUah ? 0 : options.FlatFeeUah;
+        return new CartResponse(
+            cart.Id,
+            cart.SessionToken,
+            cart.Status,
+            items,
+            subtotal,
+            deliveryFee,
+            subtotal + deliveryFee,
+            options.MinimumOrderUah,
+            subtotal >= options.MinimumOrderUah,
+            items.Any(item => item.PriceChanged),
+            items.Any(item => !item.IsAvailable),
+            items.FirstOrDefault()?.Currency ?? "UAH");
     }
 }
 
@@ -228,8 +287,8 @@ public static class CartEndpointResults
         null => Results.Ok(result.Cart),
         CartError.NotFound or CartError.ItemNotFound => Results.NotFound(),
         CartError.InvalidSession => Results.Forbid(),
-        CartError.Inactive or CartError.ProductNotAvailable => Results.BadRequest(new { error = result.Error.ToString() }),
-        CartError.QuantityExceedsAvailability => Results.Conflict(new { error = result.Error.ToString() }),
+        CartError.Inactive => Results.BadRequest(new { error = result.Error.ToString() }),
+        CartError.ProductNotAvailable or CartError.QuantityExceedsAvailability => Results.Conflict(new { error = result.Error.ToString() }),
         _ => Results.BadRequest()
     };
 
@@ -272,6 +331,12 @@ public static class CartEndpoints
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
             return CartEndpointResults.ToHttpResult(await sender.Send(new UpdateCartItemCommand(cartId, token, productId, body.Quantity), cancellationToken));
         }).WithName("UpdateCartItem").WithOpenApi();
+
+        endpoints.MapPost("/api/v1/carts/{cartId:guid}/accept-prices", async (Guid cartId, HttpRequest request, ISender sender, CancellationToken cancellationToken) =>
+        {
+            if (!CartEndpointResults.TryGetToken(request, out var token)) return CartEndpointResults.MissingToken();
+            return CartEndpointResults.ToHttpResult(await sender.Send(new AcceptCartPricesCommand(cartId, token), cancellationToken));
+        }).WithName("AcceptCartPrices").WithOpenApi();
 
         endpoints.MapDelete("/api/v1/carts/{cartId:guid}/items/{productId:guid}", async (Guid cartId, Guid productId, HttpRequest request, ISender sender, CancellationToken cancellationToken) =>
         {

@@ -63,6 +63,7 @@ public sealed class CourierAssignmentTests
         {
             Id = orderId,
             SourceCartId = Guid.NewGuid(),
+            TrackingCode = Fiore.Api.Features.Common.CommerceRules.NewTrackingCode(),
             ContactName = "Замовник",
             ContactEmail = "buyer@example.test",
             ContactPhone = "+380500000000",

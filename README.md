@@ -30,25 +30,32 @@ The catalogue also accepts optional UI filters: `search` (name, SKU, or composit
 The customer UI can use the following public flow:
 
 1. `POST /api/v1/carts` creates a guest cart and returns its `id` and `sessionToken`.
-2. Send the returned token as `X-Cart-Token` on `GET /api/v1/carts/{cartId}`, `POST /api/v1/carts/{cartId}/items`, `PUT /api/v1/carts/{cartId}/items/{productId}`, and `DELETE /api/v1/carts/{cartId}/items/{productId}`.
-3. `GET /api/v1/delivery/slots?date=YYYY-MM-DD` returns configured two-hour slots and their remaining capacity. `POST /api/v1/checkout` receives the cart ID, contact information, delivery address, and a slot. It validates availability and capacity, reserves stock, stores immutable product-price snapshots, calculates delivery, and returns an order in `pendingPayment` status.
-4. `POST /api/v1/orders/{orderId}/payments/sandbox/confirm` simulates a successful card payment for the current guest order. It is a local demo contract, not a payment-acquirer integration. `GET /api/v1/orders/{orderId}` retrieves the confirmation, payment state, and status timeline with the same `X-Cart-Token`.
+2. Send the returned token as `X-Cart-Token` on `GET /api/v1/carts/{cartId}`, `POST /api/v1/carts/{cartId}/items`, `PUT /api/v1/carts/{cartId}/items/{productId}`, and `DELETE /api/v1/carts/{cartId}/items/{productId}`. The cart returns `subtotalAmount`, `deliveryFeeAmount`, `totalAmount`, `minimumOrderAmount`, `meetsMinimumOrder`, `hasPriceChanges`, and `hasUnavailableItems`. Each item carries the current `unitPrice` and the `acceptedUnitPrice` the customer saw when adding it.
+3. `GET /api/v1/delivery/slots?date=YYYY-MM-DD` returns `{ date, slots }`. Each slot has its remaining capacity and `isAvailable`, which is false when the slot is full or starts in less than 90 minutes (Kyiv time). Without `date`, the endpoint returns today, or tomorrow when nothing is left today.
+4. `POST /api/v1/checkout` receives the cart ID, contact information, delivery address, a slot, an optional `cardMessage` (up to 250 characters), and `callBeforeDelivery`. Phones must match `+380XXXXXXXXX`; the city must be in `Delivery:ServiceCities`. Validation errors return `400` with field errors. Business conflicts return `409` with an `error` code and, where relevant, the affected `items`: `ProductNotAvailable`, `QuantityExceedsAvailability`, `PriceChanged`, `DeliverySlotUnavailable`, and `MinimumOrderNotMet`. After a `PriceChanged` conflict, the customer confirms the new prices with `POST /api/v1/carts/{cartId}/accept-prices`. A successful checkout reserves stock, fixes item prices, and returns the order with `orderNumber` and `trackingCode` in `pendingPayment` status.
+5. `POST /api/v1/orders/{orderId}/payments/sandbox/confirm` simulates a successful card payment for the current guest order. It is a local demo contract, not a payment-acquirer integration. A payment attempt after the payment window returns `409 PaymentWindowExpired`. `GET /api/v1/orders/{orderId}` retrieves the confirmation, payment state, and status timeline with the same `X-Cart-Token`.
+6. `GET /api/v1/orders/track/{trackingCode}` is the public order-status page for the confirmation link. It shows the order number, items, slot, and status history, but no contact or address data.
 
-Checkout reserves inventory immediately. Pending payments automatically expire after 30 minutes by default and restore stock; both the lifetime and check interval are configurable under `Orders`. Delivery is a fixed UAH fee with a free-delivery threshold and slot capacity, configured under `Delivery`.
+Business rules from the Jira backlog are configuration defaults: unpaid orders expire after 15 minutes with a check every minute (`Orders`); delivery costs UAH 100 below UAH 1500 and is free from UAH 1500, the minimum order is UAH 500, slots allow 10 orders and close 90 minutes before they start (`Delivery`). `Delivery:ServiceCities` defaults to Chernivtsi and is an assumption until the team confirms the service area.
+
+`GET /api/v1/catalog/products/{productId}/similar?limit=4` returns orderable bouquets that share a colour facet, then those with the closest price.
 
 The production payment provider is still a team decision. Replace the sandbox confirmation endpoint with a verified webhook from the selected provider (for example LiqPay) before any public deployment.
 
 ## Accounts and back-office API
 
-`POST /api/v1/auth/register` creates a customer account and returns a JWT. `POST /api/v1/auth/login` returns a JWT for an existing customer, manager, or administrator. Use `Authorization: Bearer <token>` for `GET /api/v1/auth/me`.
+`POST /api/v1/auth/register` creates a customer account and returns a JWT. `POST /api/v1/auth/login` returns a JWT for an existing customer, manager, or administrator. Five consecutive wrong passwords lock the account for five minutes; locked sign-ins return `423` with `retryAfterSeconds`. Use `Authorization: Bearer <token>` for `GET /api/v1/auth/me`.
 
 The protected back-office API is deliberately restricted to `manager` and `administrator` roles:
 
 - `POST /api/v1/admin/products` creates a product, initial stock, and optional image gallery.
-- `PUT /api/v1/admin/products/{productId}` changes product data, dimensions, composition, filter facets, status, stock, and gallery.
+- `PUT /api/v1/admin/products/{productId}` changes product data, dimensions, packaging, composition, filter facets, status, stock, and gallery.
+- `PUT /api/v1/admin/products/{productId}/availability` with `{ "isAvailable": false }` is the one-click "out of stock" switch; the bouquet stays visible but cannot be ordered.
 - `POST /api/v1/admin/catalog/facets` creates an occasion, flower-type, or colour facet used by the catalogue filters.
-- `GET /api/v1/admin/orders` lists orders for operational work.
-- `PUT /api/v1/admin/orders/{orderId}/status` moves an order only through the supported process: `pendingPayment → paid → accepted → assembling → readyForDelivery → outForDelivery → delivered`. Cancellation is allowed before dispatch.
+- `GET /api/v1/admin/orders?status=&deliveryDate=YYYY-MM-DD` is the order queue. Unpaid (`pendingPayment`) orders are hidden unless requested with `status=pendingPayment`.
+- `GET /api/v1/admin/orders/{orderId}` returns the order card: contact and delivery data, greeting-card text, courier, payment, and status history with the staff member who made each change.
+- `PUT /api/v1/admin/orders/{orderId}/courier` records the external courier (name, optional `+380` phone) while the order is assembling or ready for delivery; `GET /api/v1/admin/orders/{orderId}/delivery-summary` returns the delivery text to send to the courier.
+- `PUT /api/v1/admin/orders/{orderId}/status` moves an order only through the supported process: `pendingPayment → paid → accepted → assembling → readyForDelivery → outForDelivery → delivered`. `outForDelivery` requires an assigned courier. Cancellation is allowed before dispatch.
 
 The first administrator is not seeded with a default password. For a one-time local or deployment bootstrap, set a secret `Bootstrap__AdministratorToken` and call `POST /api/v1/setup/administrator` with that secret in `X-Setup-Token`; it works only while no administrator exists. An administrator can then create managers or other administrators via `POST /api/v1/admin/users`.
 
@@ -74,10 +81,10 @@ Open the Aspire Dashboard URL printed in the console, or go directly to Swagger 
 docker compose up -d
 dotnet tool restore
 dotnet ef database update --project src/Fiore.Api
-dotnet run --project src/Fiore.Api --urls http://localhost:5090
+dotnet run --project src/Fiore.Api --urls http://localhost:5162
 ```
 
-Open Swagger at `http://localhost:5090/swagger` in the Development environment.
+Open Swagger at `http://localhost:5162/swagger` in the Development environment.
 
 ### Development seed accounts
 

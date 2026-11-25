@@ -45,6 +45,8 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(user => user.LastName).HasColumnName("last_name");
             entity.Property(user => user.Phone).HasColumnName("phone");
             entity.Property(user => user.Status).HasColumnName("status").HasColumnType("user_account_status");
+            entity.Property(user => user.FailedLoginCount).HasColumnName("failed_login_count");
+            entity.Property(user => user.LockoutEndsAt).HasColumnName("lockout_ends_at");
             entity.Property(user => user.CreatedAt).HasColumnName("created_at");
             entity.Property(user => user.UpdatedAt).HasColumnName("updated_at");
             entity.HasMany(user => user.Roles).WithOne(role => role.User).HasForeignKey(role => role.UserId).OnDelete(DeleteBehavior.Cascade);
@@ -86,6 +88,8 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(product => product.Name).HasColumnName("name").IsRequired();
             entity.Property(product => product.Description).HasColumnName("description");
             entity.Property(product => product.BasePrice).HasColumnName("base_price").HasPrecision(12, 2);
+            entity.Property(product => product.IsTemporarilyUnavailable).HasColumnName("is_temporarily_unavailable");
+            entity.Property(product => product.Packaging).HasColumnName("packaging").HasMaxLength(500);
             entity.Property(product => product.Currency).HasColumnName("currency").HasMaxLength(3);
             entity.Property(product => product.Status).HasColumnName("status").HasColumnType("product_status");
             entity.Property(product => product.CreatedAt).HasColumnName("created_at");
@@ -175,6 +179,7 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(item => item.CartId).HasColumnName("cart_id");
             entity.Property(item => item.ProductId).HasColumnName("product_id");
             entity.Property(item => item.Quantity).HasColumnName("quantity");
+            entity.Property(item => item.UnitPrice).HasColumnName("unit_price").HasPrecision(12, 2);
             entity.Property(item => item.AddedAt).HasColumnName("added_at");
             entity.HasOne(item => item.Product).WithMany().HasForeignKey(item => item.ProductId).OnDelete(DeleteBehavior.Restrict);
         });
@@ -186,6 +191,8 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(order => order.Id).HasColumnName("id");
             entity.Property(order => order.SourceCartId).HasColumnName("source_cart_id");
             entity.HasIndex(order => order.SourceCartId).IsUnique();
+            entity.Property(order => order.TrackingCode).HasColumnName("tracking_code").HasMaxLength(64).IsRequired();
+            entity.HasIndex(order => order.TrackingCode).IsUnique();
             entity.HasOne<Cart>().WithOne().HasForeignKey<Order>(order => order.SourceCartId).OnDelete(DeleteBehavior.Restrict);
             entity.Property(order => order.ContactName).HasColumnName("contact_name").IsRequired();
             entity.Property(order => order.ContactEmail).HasColumnName("contact_email").IsRequired();
@@ -232,6 +239,7 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(delivery => delivery.Building).HasColumnName("building").IsRequired();
             entity.Property(delivery => delivery.Apartment).HasColumnName("apartment");
             entity.Property(delivery => delivery.DeliveryNotes).HasColumnName("delivery_notes");
+            entity.Property(delivery => delivery.CallBeforeDelivery).HasColumnName("call_before_delivery");
             entity.Property(delivery => delivery.ScheduledFrom).HasColumnName("scheduled_from");
             entity.Property(delivery => delivery.ScheduledTo).HasColumnName("scheduled_to");
             entity.Property(delivery => delivery.CourierId).HasColumnName("courier_id");
@@ -267,6 +275,7 @@ public sealed class FioreDbContext(DbContextOptions<FioreDbContext> options) : D
             entity.Property(history => history.OrderId).HasColumnName("order_id");
             entity.Property(history => history.Status).HasColumnName("status").HasColumnType("order_status");
             entity.Property(history => history.Note).HasColumnName("note").HasMaxLength(500);
+            entity.Property(history => history.ChangedBy).HasColumnName("changed_by").HasMaxLength(254);
             entity.Property(history => history.ChangedAt).HasColumnName("changed_at");
             entity.HasIndex(history => new { history.OrderId, history.ChangedAt });
         });

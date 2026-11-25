@@ -93,10 +93,19 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(6,2)")
                         .HasColumnName("height_cm");
 
+                    b.Property<bool>("IsTemporarilyUnavailable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_temporarily_unavailable");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
+
+                    b.Property<string>("Packaging")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("packaging");
 
                     b.Property<string>("Sku")
                         .IsRequired()
@@ -293,6 +302,11 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("quantity");
 
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("numeric(12,2)")
+                        .HasColumnName("unit_price");
+
                     b.HasKey("CartId", "ProductId");
 
                     b.HasIndex("ProductId");
@@ -363,6 +377,12 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(12,2)")
                         .HasColumnName("total_amount");
 
+                    b.Property<string>("TrackingCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("tracking_code");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -370,6 +390,9 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("SourceCartId")
+                        .IsUnique();
+
+                    b.HasIndex("TrackingCode")
                         .IsUnique();
 
                     b.ToTable("orders", (string)null);
@@ -389,6 +412,10 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("building");
+
+                    b.Property<bool>("CallBeforeDelivery")
+                        .HasColumnType("boolean")
+                        .HasColumnName("call_before_delivery");
 
                     b.Property<string>("City")
                         .IsRequired()
@@ -505,6 +532,11 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("ChangedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("changed_at");
+
+                    b.Property<string>("ChangedBy")
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)")
+                        .HasColumnName("changed_by");
 
                     b.Property<string>("Note")
                         .HasMaxLength(500)
@@ -650,6 +682,10 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("email");
 
+                    b.Property<int>("FailedLoginCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("failed_login_count");
+
                     b.Property<string>("FirstName")
                         .IsRequired()
                         .HasColumnType("text")
@@ -658,6 +694,10 @@ namespace Fiore.Api.Infrastructure.Persistence.Migrations
                     b.Property<string>("LastName")
                         .HasColumnType("text")
                         .HasColumnName("last_name");
+
+                    b.Property<DateTimeOffset?>("LockoutEndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lockout_ends_at");
 
                     b.Property<string>("PasswordHash")
                         .IsRequired()

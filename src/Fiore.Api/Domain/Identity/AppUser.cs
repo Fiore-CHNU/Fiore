@@ -9,6 +9,8 @@ public sealed class AppUser
     public string? LastName { get; set; }
     public string? Phone { get; set; }
     public UserAccountStatus Status { get; set; } = UserAccountStatus.Active;
+    public int FailedLoginCount { get; set; }
+    public DateTimeOffset? LockoutEndsAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public List<UserRole> Roles { get; set; } = [];

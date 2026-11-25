@@ -1,22 +1,52 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
 using Fiore.Api.Infrastructure.Persistence;
+using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
 
 namespace Fiore.Api.Features.Orders;
 
-public sealed class OrderLifecycleService(FioreDbContext dbContext)
+public sealed class OrderOptions
 {
+    public const string SectionName = "Orders";
+
+    /// <summary>Unpaid orders are cancelled after this many minutes (US-5.2, BR-9).</summary>
+    public int UnpaidLifetimeMinutes { get; init; } = 15;
+
+    /// <summary>The background check runs at least once a minute (US-5.2).</summary>
+    public int ExpirationCheckIntervalMinutes { get; init; } = 1;
+
+    public TimeSpan UnpaidLifetime => TimeSpan.FromMinutes(Math.Max(1, UnpaidLifetimeMinutes));
+}
+
+public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions options, TimeProvider timeProvider)
+{
+    public DateTimeOffset UnpaidCutoff() => timeProvider.GetUtcNow() - options.UnpaidLifetime;
+
     public async Task<PaymentOperationResult> ConfirmSandboxPayment(Guid orderId, Guid sessionToken, CancellationToken cancellationToken)
     {
         var order = await LoadOrderForGuest(orderId, sessionToken, cancellationToken);
         if (order is null) return PaymentOperationResult.Failure(PaymentError.NotFound);
+
+        // US-5.2 scenario 3: a late payment attempt never revives an expired order, even before the background job runs.
+        if (order.Status == OrderStatus.PendingPayment && order.CreatedAt <= UnpaidCutoff())
+        {
+            Expire(order, timeProvider.GetUtcNow());
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return PaymentOperationResult.Failure(PaymentError.PaymentWindowExpired);
+        }
+
+        if (order.Status == OrderStatus.Cancelled && order.Payment?.Status == PaymentStatus.Expired)
+        {
+            return PaymentOperationResult.Failure(PaymentError.PaymentWindowExpired);
+        }
+
         if (order.Status != OrderStatus.PendingPayment || order.Payment is null || order.Payment.Status != PaymentStatus.Initiated)
         {
             return PaymentOperationResult.Failure(PaymentError.NotPayable);
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         order.Status = OrderStatus.Paid;
         order.UpdatedAt = now;
         order.Payment.Status = PaymentStatus.Succeeded;
@@ -27,7 +57,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
         return PaymentOperationResult.Success(order.Payment, order.Status);
     }
 
-    public async Task<OrderTransitionResult> TransitionByStaff(Guid orderId, OrderStatus nextStatus, CancellationToken cancellationToken)
+    public async Task<OrderTransitionResult> TransitionByStaff(Guid orderId, OrderStatus nextStatus, string? changedBy, CancellationToken cancellationToken)
     {
         var order = await LoadOrder(orderId, cancellationToken);
         if (order is null) return OrderTransitionResult.Failure(OrderTransitionError.NotFound);
@@ -37,7 +67,13 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
             return OrderTransitionResult.Failure(OrderTransitionError.CourierRequired);
         }
 
-        var now = DateTimeOffset.UtcNow;
+        // US-9.4 / US-10.1: "out for delivery" requires an assigned courier.
+        if (nextStatus == OrderStatus.OutForDelivery && string.IsNullOrWhiteSpace(order.Delivery?.CourierName))
+        {
+            return OrderTransitionResult.Failure(OrderTransitionError.CourierRequired);
+        }
+
+        var now = timeProvider.GetUtcNow();
         if (nextStatus == OrderStatus.Cancelled)
         {
             ReleaseReservedInventory(order, now);
@@ -50,7 +86,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
 
         order.Status = nextStatus;
         order.UpdatedAt = now;
-        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Cancelled by staff." : "Status updated by staff.", now);
+        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Cancelled by staff." : "Status updated by staff.", now, changedBy);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
     }
@@ -69,7 +105,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
             return OrderTransitionResult.Failure(OrderTransitionError.InvalidStatusForCourier);
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         order.Delivery.CourierId = courierId;
         order.Delivery.CourierName = courierName.Trim();
         order.Delivery.CourierPhone = string.IsNullOrWhiteSpace(courierPhone) ? null : courierPhone.Trim();
@@ -109,22 +145,27 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
             .Include(order => order.Payment)
             .Where(order => order.Status == OrderStatus.PendingPayment && order.CreatedAt <= cutoff)
             .ToListAsync(cancellationToken);
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         foreach (var order in orders)
         {
-            ReleaseReservedInventory(order, now);
-            order.Status = OrderStatus.Cancelled;
-            order.UpdatedAt = now;
-            if (order.Payment is not null)
-            {
-                order.Payment.Status = PaymentStatus.Expired;
-                order.Payment.UpdatedAt = now;
-            }
-            AddHistory(order, OrderStatus.Cancelled, "Unpaid order expired.", now);
+            Expire(order, now);
         }
 
         if (orders.Count > 0) await dbContext.SaveChangesAsync(cancellationToken);
         return orders.Count;
+    }
+
+    private void Expire(Order order, DateTimeOffset now)
+    {
+        ReleaseReservedInventory(order, now);
+        order.Status = OrderStatus.Cancelled;
+        order.UpdatedAt = now;
+        if (order.Payment is not null)
+        {
+            order.Payment.Status = PaymentStatus.Expired;
+            order.Payment.UpdatedAt = now;
+        }
+        AddHistory(order, OrderStatus.Cancelled, "Unpaid order expired.", now);
     }
 
     public static bool IsValidStaffTransition(OrderStatus current, OrderStatus next) => (current, next) switch
@@ -148,6 +189,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
         dbContext.Orders
             .Include(order => order.Delivery)
             .Include(order => order.Payment)
+            .Include(order => order.Delivery)
             .Include(order => order.Items).ThenInclude(item => item.Product).ThenInclude(product => product.Inventory)
             .SingleOrDefaultAsync(order => order.Id == orderId, cancellationToken);
 
@@ -161,7 +203,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
         }
     }
 
-    private void AddHistory(Order order, OrderStatus status, string note, DateTimeOffset now) =>
+    private void AddHistory(Order order, OrderStatus status, string note, DateTimeOffset now, string? changedBy = null) =>
         dbContext.OrderStatusHistory.Add(new OrderStatusHistory
         {
             Id = Guid.NewGuid(),
@@ -169,11 +211,12 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext)
             Order = order,
             Status = status,
             Note = note,
+            ChangedBy = changedBy,
             ChangedAt = now
         });
 }
 
-public enum PaymentError { NotFound, NotPayable }
+public enum PaymentError { NotFound, NotPayable, PaymentWindowExpired }
 public sealed record PaymentOperationResult(Payment? Payment, OrderStatus? OrderStatus, PaymentError? Error)
 {
     public static PaymentOperationResult Success(Payment payment, OrderStatus orderStatus) => new(payment, orderStatus, null);
@@ -187,21 +230,24 @@ public sealed record OrderTransitionResult(Order? Order, OrderTransitionError? E
     public static OrderTransitionResult Failure(OrderTransitionError error) => new(null, error);
 }
 
-public sealed class UnpaidOrderExpirationService(IServiceScopeFactory scopeFactory, IConfiguration configuration, ILogger<UnpaidOrderExpirationService> logger) : BackgroundService
+public sealed class UnpaidOrderExpirationService(IServiceScopeFactory scopeFactory, OrderOptions options, ILogger<UnpaidOrderExpirationService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var intervalMinutes = Math.Max(1, configuration.GetValue("Orders:ExpirationCheckIntervalMinutes", 5));
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(intervalMinutes));
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(Math.Max(1, options.ExpirationCheckIntervalMinutes)));
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             try
             {
                 using var scope = scopeFactory.CreateScope();
-                var lifetimeMinutes = Math.Max(1, configuration.GetValue("Orders:UnpaidLifetimeMinutes", 30));
-                var expired = await scope.ServiceProvider.GetRequiredService<OrderLifecycleService>()
-                    .ExpireUnpaidOrders(DateTimeOffset.UtcNow.AddMinutes(-lifetimeMinutes), stoppingToken);
-                if (expired > 0) logger.LogInformation("Expired {ExpiredOrderCount} unpaid Fiore orders.", expired);
+                var lifecycle = scope.ServiceProvider.GetRequiredService<OrderLifecycleService>();
+                var expired = await lifecycle.ExpireUnpaidOrders(lifecycle.UnpaidCutoff(), stoppingToken);
+                if (expired > 0)
+                {
+                    // Restored stock must be visible in the cached catalogue immediately.
+                    await scope.ServiceProvider.GetRequiredService<IOutputCacheStore>().EvictByTagAsync("catalog", stoppingToken);
+                    logger.LogInformation("Expired {ExpiredOrderCount} unpaid Fiore orders.", expired);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

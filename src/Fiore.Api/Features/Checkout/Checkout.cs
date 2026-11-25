@@ -1,6 +1,7 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
 using Fiore.Api.Features.Carts;
+using Fiore.Api.Features.Common;
 using Fiore.Api.Features.Delivery;
 using Fiore.Api.Infrastructure.Persistence;
 using FluentValidation;
@@ -25,25 +26,29 @@ public sealed record CheckoutRequest(
     string? Apartment = null,
     string? DeliveryNotes = null,
     string? CustomerNote = null,
-    string? CardMessage = null);
+    string? CardMessage = null,
+    bool CallBeforeDelivery = false);
 
 public sealed record CheckoutCommand(CheckoutRequest Request, Guid SessionToken) : IRequest<CheckoutResult>;
 public sealed record GetOrderRequest(Guid OrderId, Guid SessionToken) : IRequest<OrderDetailsResponse?>;
-public sealed record CheckoutResponse(Guid OrderId, OrderStatus Status, decimal SubtotalAmount, decimal DeliveryFeeAmount, decimal TotalAmount, string Currency, DateTimeOffset CreatedAt);
+public sealed record CheckoutResponse(Guid OrderId, string OrderNumber, string TrackingCode, OrderStatus Status, decimal SubtotalAmount, decimal DeliveryFeeAmount, decimal TotalAmount, string Currency, DateTimeOffset CreatedAt);
 public sealed record OrderDetailsResponse(
     Guid OrderId,
+    string OrderNumber,
+    string TrackingCode,
     OrderStatus Status,
     decimal SubtotalAmount,
     decimal DeliveryFeeAmount,
     decimal TotalAmount,
     string Currency,
+    string? CardMessage,
     DateTimeOffset CreatedAt,
     IReadOnlyList<OrderItemResponse> Items,
     DeliveryDetailsResponse Delivery,
     PaymentDetailsResponse? Payment,
     IReadOnlyList<OrderStatusHistoryResponse> StatusHistory);
 public sealed record OrderItemResponse(Guid ProductId, string Name, string Sku, decimal UnitPrice, int Quantity, decimal LineTotal);
-public sealed record DeliveryDetailsResponse(string RecipientName, string RecipientPhone, string City, string Street, string Building, string? Apartment, string? DeliveryNotes, DateTimeOffset ScheduledFrom, DateTimeOffset ScheduledTo);
+public sealed record DeliveryDetailsResponse(string RecipientName, string RecipientPhone, string City, string Street, string Building, string? Apartment, string? DeliveryNotes, bool CallBeforeDelivery, DateTimeOffset ScheduledFrom, DateTimeOffset ScheduledTo);
 public sealed record PaymentDetailsResponse(string Provider, PaymentStatus Status, decimal Amount, string Currency);
 public sealed record OrderStatusHistoryResponse(OrderStatus Status, string? Note, DateTimeOffset ChangedAt);
 
@@ -57,13 +62,20 @@ public enum CheckoutError
     QuantityExceedsAvailability,
     MixedCurrencies,
     DeliverySlotUnavailable,
-    DeliverySlotInvalid
+    DeliverySlotInvalid,
+    PriceChanged,
+    MinimumOrderNotMet
 }
 
-public sealed record CheckoutResult(CheckoutResponse? Order, CheckoutError? Error)
+/// <summary>Per-item details of a 409 checkout conflict, so the client can show which bouquet changed (US-4.5).</summary>
+public sealed record CheckoutConflictItem(Guid ProductId, string Name, string Reason, decimal? AcceptedUnitPrice = null, decimal? CurrentUnitPrice = null, int? QuantityAvailable = null);
+
+public sealed record CheckoutResult(CheckoutResponse? Order, CheckoutError? Error, IReadOnlyList<CheckoutConflictItem>? Conflicts = null)
 {
     public static CheckoutResult Success(Order order) => new(new CheckoutResponse(
         order.Id,
+        CommerceRules.OrderNumber(order.Id),
+        order.TrackingCode,
         order.Status,
         order.SubtotalAmount,
         order.DeliveryFeeAmount,
@@ -71,31 +83,32 @@ public sealed record CheckoutResult(CheckoutResponse? Order, CheckoutError? Erro
         order.Currency,
         order.CreatedAt), null);
 
-    public static CheckoutResult Failure(CheckoutError error) => new(null, error);
+    public static CheckoutResult Failure(CheckoutError error, IReadOnlyList<CheckoutConflictItem>? conflicts = null) => new(null, error, conflicts);
 }
 
 public sealed class CheckoutRequestValidator : AbstractValidator<CheckoutRequest>
 {
-    public CheckoutRequestValidator()
+    public CheckoutRequestValidator(DeliveryOptions deliveryOptions)
     {
         RuleFor(request => request.CartId).NotEmpty();
         RuleFor(request => request.ContactName).NotEmpty().MaximumLength(120);
         RuleFor(request => request.ContactEmail).NotEmpty().EmailAddress().MaximumLength(254);
-        RuleFor(request => request.ContactPhone).NotEmpty().MaximumLength(32);
+        RuleFor(request => request.ContactPhone).NotEmpty().Must(CommerceRules.IsValidPhone).WithMessage(CommerceRules.PhoneFormatMessage);
         RuleFor(request => request.RecipientName).NotEmpty().MaximumLength(120);
-        RuleFor(request => request.RecipientPhone).NotEmpty().MaximumLength(32);
-        RuleFor(request => request.City).NotEmpty().MaximumLength(120);
+        RuleFor(request => request.RecipientPhone).NotEmpty().Must(CommerceRules.IsValidPhone).WithMessage(CommerceRules.PhoneFormatMessage);
+        RuleFor(request => request.City).NotEmpty().MaximumLength(120)
+            .Must(deliveryOptions.IsServedCity).WithMessage("Delivery is available only within the city.");
         RuleFor(request => request.Street).NotEmpty().MaximumLength(160);
         RuleFor(request => request.Building).NotEmpty().MaximumLength(32);
         RuleFor(request => request.ScheduledTo).GreaterThan(request => request.ScheduledFrom);
         RuleFor(request => request.Apartment).MaximumLength(32).When(request => request.Apartment is not null);
         RuleFor(request => request.DeliveryNotes).MaximumLength(1000).When(request => request.DeliveryNotes is not null);
         RuleFor(request => request.CustomerNote).MaximumLength(1000).When(request => request.CustomerNote is not null);
-        RuleFor(request => request.CardMessage).MaximumLength(500).When(request => request.CardMessage is not null);
+        RuleFor(request => request.CardMessage).MaximumLength(CommerceRules.CardMessageMaxLength).When(request => request.CardMessage is not null);
     }
 }
 
-public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotService deliverySlotService) : IRequestHandler<CheckoutCommand, CheckoutResult>
+public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotService deliverySlotService, TimeProvider timeProvider) : IRequestHandler<CheckoutCommand, CheckoutResult>
 {
     public async Task<CheckoutResult> Handle(CheckoutCommand command, CancellationToken cancellationToken)
     {
@@ -111,20 +124,30 @@ public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotServic
         if (cart.Status != CartStatus.Active) return CheckoutResult.Failure(CheckoutError.CartInactive);
         if (cart.Items.Count == 0) return CheckoutResult.Failure(CheckoutError.CartEmpty);
         if (!deliverySlotService.IsConfiguredSlot(request.ScheduledFrom, request.ScheduledTo)) return CheckoutResult.Failure(CheckoutError.DeliverySlotInvalid);
-        if (!await deliverySlotService.HasCapacity(null, request.ScheduledFrom, request.ScheduledTo, cancellationToken)) return CheckoutResult.Failure(CheckoutError.DeliverySlotUnavailable);
-
-        foreach (var item in cart.Items)
+        if (!deliverySlotService.IsBookableInTime(request.ScheduledFrom) ||
+            !await deliverySlotService.HasCapacity(null, request.ScheduledFrom, request.ScheduledTo, cancellationToken))
         {
-            if (item.Product.Status != ProductStatus.Available || item.Product.Inventory is null || item.Product.Inventory.QuantityAvailable <= 0)
-            {
-                return CheckoutResult.Failure(CheckoutError.ProductNotAvailable);
-            }
-
-            if (item.Quantity > item.Product.Inventory.QuantityAvailable)
-            {
-                return CheckoutResult.Failure(CheckoutError.QuantityExceedsAvailability);
-            }
+            return CheckoutResult.Failure(CheckoutError.DeliverySlotUnavailable);
         }
+
+        // US-4.5: re-check availability and prices on the server; report every affected item at once.
+        var unavailable = cart.Items
+            .Where(item => !CommerceRules.IsOrderable(item.Product))
+            .Select(item => new CheckoutConflictItem(item.ProductId, item.Product.Name, "unavailable"))
+            .ToList();
+        if (unavailable.Count > 0) return CheckoutResult.Failure(CheckoutError.ProductNotAvailable, unavailable);
+
+        var insufficient = cart.Items
+            .Where(item => item.Quantity > item.Product.Inventory!.QuantityAvailable)
+            .Select(item => new CheckoutConflictItem(item.ProductId, item.Product.Name, "insufficientQuantity", QuantityAvailable: item.Product.Inventory!.QuantityAvailable))
+            .ToList();
+        if (insufficient.Count > 0) return CheckoutResult.Failure(CheckoutError.QuantityExceedsAvailability, insufficient);
+
+        var repriced = cart.Items
+            .Where(item => item.UnitPrice != item.Product.BasePrice)
+            .Select(item => new CheckoutConflictItem(item.ProductId, item.Product.Name, "priceChanged", item.UnitPrice, item.Product.BasePrice))
+            .ToList();
+        if (repriced.Count > 0) return CheckoutResult.Failure(CheckoutError.PriceChanged, repriced);
 
         var currency = cart.Items[0].Product.Currency;
         if (cart.Items.Any(item => item.Product.Currency != currency))
@@ -132,14 +155,16 @@ public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotServic
             return CheckoutResult.Failure(CheckoutError.MixedCurrencies);
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         var subtotal = cart.Items.Sum(item => item.Product.BasePrice * item.Quantity);
+        if (!deliverySlotService.MeetsMinimumOrder(subtotal)) return CheckoutResult.Failure(CheckoutError.MinimumOrderNotMet);
         var deliveryFee = deliverySlotService.CalculateFee(subtotal);
         var orderId = Guid.NewGuid();
         var order = new Order
         {
             Id = orderId,
             SourceCartId = cart.Id,
+            TrackingCode = CommerceRules.NewTrackingCode(),
             ContactName = request.ContactName.Trim(),
             ContactEmail = request.ContactEmail.Trim(),
             ContactPhone = request.ContactPhone.Trim(),
@@ -162,8 +187,9 @@ public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotServic
                 Building = request.Building.Trim(),
                 Apartment = request.Apartment?.Trim(),
                 DeliveryNotes = request.DeliveryNotes?.Trim(),
-                ScheduledFrom = request.ScheduledFrom,
-                ScheduledTo = request.ScheduledTo
+                CallBeforeDelivery = request.CallBeforeDelivery,
+                ScheduledFrom = request.ScheduledFrom.ToUniversalTime(),
+                ScheduledTo = request.ScheduledTo.ToUniversalTime()
             },
             Items = cart.Items.Select(item => new OrderItem
             {
@@ -236,11 +262,14 @@ public sealed class GetOrderHandler(FioreDbContext dbContext) : IRequestHandler<
 
         return new OrderDetailsResponse(
             order.Id,
+            CommerceRules.OrderNumber(order.Id),
+            order.TrackingCode,
             order.Status,
             order.SubtotalAmount,
             order.DeliveryFeeAmount,
             order.TotalAmount,
             order.Currency,
+            order.CardMessage,
             order.CreatedAt,
             order.Items.Select(item => new OrderItemResponse(item.ProductId, item.ProductName, item.ProductSku, item.UnitPrice, item.Quantity, item.LineTotal)).ToList(),
             new DeliveryDetailsResponse(
@@ -251,6 +280,7 @@ public sealed class GetOrderHandler(FioreDbContext dbContext) : IRequestHandler<
                 order.Delivery.Building,
                 order.Delivery.Apartment,
                 order.Delivery.DeliveryNotes,
+                order.Delivery.CallBeforeDelivery,
                 order.Delivery.ScheduledFrom,
                 order.Delivery.ScheduledTo),
             order.Payment is null ? null : new PaymentDetailsResponse(order.Payment.Provider, order.Payment.Status, order.Payment.Amount, order.Payment.Currency),
@@ -273,6 +303,7 @@ public static class CheckoutEndpoints
             CheckoutRequest request,
             HttpRequest httpRequest,
             IValidator<CheckoutRequest> validator,
+            DeliveryOptions deliveryOptions,
             ISender sender,
             IOutputCacheStore outputCacheStore,
             CancellationToken cancellationToken) =>
@@ -292,7 +323,9 @@ public static class CheckoutEndpoints
             {
                 CheckoutError.CartNotFound => Results.NotFound(),
                 CheckoutError.InvalidSession => Results.Forbid(),
-                CheckoutError.QuantityExceedsAvailability or CheckoutError.DeliverySlotUnavailable => Results.Conflict(new { error = result.Error.ToString() }),
+                CheckoutError.ProductNotAvailable or CheckoutError.QuantityExceedsAvailability or CheckoutError.PriceChanged or CheckoutError.DeliverySlotUnavailable
+                    => Results.Conflict(new { error = result.Error.ToString(), items = result.Conflicts ?? [] }),
+                CheckoutError.MinimumOrderNotMet => Results.Conflict(new { error = result.Error.ToString(), minimumOrderAmount = deliveryOptions.MinimumOrderUah }),
                 _ => Results.BadRequest(new { error = result.Error!.ToString() })
             };
         }).WithName("CheckoutGuestCart").WithOpenApi();

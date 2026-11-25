@@ -1,0 +1,36 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Fiore.sln
+
+      - name: Build
+        run: dotnet build Fiore.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test Fiore.sln --no-build --configuration Release --verbosity normal
+
+      - name: Restore local tools
+        run: dotnet tool restore
+
+      - name: Generate idempotent migration script
+        run: dotnet tool run dotnet-ef migrations script --idempotent --project src/Fiore.Api --startup-project src/Fiore.Api --configuration Release --no-build --output migrations.sql
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migrations-sql
+          path: migrations.sql

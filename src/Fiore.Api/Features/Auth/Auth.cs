@@ -113,7 +113,7 @@ public static class AuthEndpoints
             return Results.Created($"/api/v1/users/{user.Id}", response);
         }).AllowAnonymous().WithName("RegisterCustomer").WithOpenApi();
 
-        endpoints.MapPost("/api/v1/auth/login", async (LoginRequest request, IValidator<LoginRequest> validator, FioreDbContext dbContext, IPasswordHasher<AppUser> passwordHasher, TokenService tokenService, CancellationToken cancellationToken) =>
+        endpoints.MapPost("/api/v1/auth/login", async (LoginRequest request, IValidator<LoginRequest> validator, FioreDbContext dbContext, IPasswordHasher<AppUser> passwordHasher, TokenService tokenService, TimeProvider timeProvider, CancellationToken cancellationToken) =>
         {
             var validation = await validator.ValidateAsync(request, cancellationToken);
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
@@ -121,9 +121,37 @@ public static class AuthEndpoints
             var email = request.Email.Trim().ToLowerInvariant();
             var user = await dbContext.Users.Include(candidate => candidate.Roles).ThenInclude(role => role.Role)
                 .SingleOrDefaultAsync(candidate => candidate.Email == email, cancellationToken);
+            var now = timeProvider.GetUtcNow();
+
+            // US-7.1 scenario 3: after 5 consecutive wrong passwords, sign-in is blocked for 5 minutes, even with the right password.
+            if (user?.LockoutEndsAt > now)
+            {
+                return LockedOut(user.LockoutEndsAt.Value, now);
+            }
+
             if (user is null || user.Status != UserAccountStatus.Active || passwordHasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
             {
+                if (user is not null)
+                {
+                    user.FailedLoginCount++;
+                    if (user.FailedLoginCount >= MaxFailedLoginAttempts)
+                    {
+                        user.FailedLoginCount = 0;
+                        user.LockoutEndsAt = now.Add(LockoutDuration);
+                    }
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    if (user.LockoutEndsAt > now) return LockedOut(user.LockoutEndsAt.Value, now);
+                }
+
+                // Same response for an unknown email and a wrong password (US-7.1 scenario 2).
                 return Results.Unauthorized();
+            }
+
+            if (user.FailedLoginCount != 0 || user.LockoutEndsAt is not null)
+            {
+                user.FailedLoginCount = 0;
+                user.LockoutEndsAt = null;
+                await dbContext.SaveChangesAsync(cancellationToken);
             }
 
             return Results.Ok(tokenService.Create(user, user.Roles.Select(role => role.Role.Code).ToList()));
@@ -170,6 +198,15 @@ public static class AuthEndpoints
         }).WithName("CreateStaffUser").WithOpenApi();
 
         return endpoints;
+    }
+
+    public const int MaxFailedLoginAttempts = 5;
+    public static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(5);
+
+    private static IResult LockedOut(DateTimeOffset lockoutEndsAt, DateTimeOffset now)
+    {
+        var retryAfterSeconds = (int)Math.Ceiling((lockoutEndsAt - now).TotalSeconds);
+        return Results.Json(new { error = "AccountLocked", retryAfterSeconds }, statusCode: StatusCodes.Status423Locked);
     }
 
     private static AppUser CreateUser(CreateStaffUserRequest request, AppRole role, IPasswordHasher<AppUser> passwordHasher)
