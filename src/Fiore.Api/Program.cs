@@ -24,6 +24,8 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.AddServiceDefaults();
+
 var jwtSigningKey = builder.Configuration["Jwt:SigningKey"]
     ?? (builder.Environment.IsProduction()
         ? throw new InvalidOperationException("JWT signing key is required in production.")
@@ -72,6 +74,14 @@ builder.Services.AddAuthorization(options => options.AddPolicy("Staff", policy =
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+if (!builder.Environment.IsEnvironment("Testing") && !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Redis")))
+{
+    builder.AddRedisOutputCache("Redis");
+}
+else
+{
+    builder.Services.AddOutputCache();
+}
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 builder.Services.AddCors(options => options.AddPolicy("Frontend", policy =>
@@ -88,11 +98,20 @@ var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
+    await using var scope = app.Services.CreateAsyncScope();
+    var dbContext = scope.ServiceProvider.GetRequiredService<FioreDbContext>();
+    if (dbContext.Database.IsRelational())
+    {
+        await dbContext.Database.MigrateAsync();
+    }
+
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+app.MapDefaultEndpoints();
 app.UseCors("Frontend");
+app.UseOutputCache();
 app.UseAuthentication();
 app.UseAuthorization();
 
