@@ -52,7 +52,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
         order.Payment.Status = PaymentStatus.Succeeded;
         order.Payment.CompletedAt = now;
         order.Payment.UpdatedAt = now;
-        AddHistory(order, OrderStatus.Paid, "Sandbox payment confirmed.", now);
+        AddHistory(order, OrderStatus.Paid, "Оплату підтверджено (тестовий режим).", now);
         await dbContext.SaveChangesAsync(cancellationToken);
         return PaymentOperationResult.Success(order.Payment, order.Status);
     }
@@ -86,7 +86,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
 
         order.Status = nextStatus;
         order.UpdatedAt = now;
-        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Cancelled by staff." : "Status updated by staff.", now, changedBy);
+        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Скасовано працівником." : "Статус змінено працівником.", now, changedBy);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
     }
@@ -96,7 +96,8 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
         Guid? courierId,
         string courierName,
         string? courierPhone,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? changedBy = null)
     {
         var order = await LoadOrder(orderId, cancellationToken);
         if (order is null) return OrderTransitionResult.Failure(OrderTransitionError.NotFound);
@@ -111,7 +112,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
         order.Delivery.CourierPhone = string.IsNullOrWhiteSpace(courierPhone) ? null : courierPhone.Trim();
         order.Delivery.CourierAssignedAt = now;
         order.UpdatedAt = now;
-        AddHistory(order, order.Status, $"Courier assigned: {order.Delivery.CourierName}.", now);
+        AddHistory(order, order.Status, $"Призначено кур’єра: {order.Delivery.CourierName}.", now, changedBy);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
     }
@@ -165,7 +166,7 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
             order.Payment.Status = PaymentStatus.Expired;
             order.Payment.UpdatedAt = now;
         }
-        AddHistory(order, OrderStatus.Cancelled, "Unpaid order expired.", now);
+        AddHistory(order, OrderStatus.Cancelled, "Не оплачено вчасно, замовлення скасовано автоматично.", now);
     }
 
     public static bool IsValidStaffTransition(OrderStatus current, OrderStatus next) => (current, next) switch

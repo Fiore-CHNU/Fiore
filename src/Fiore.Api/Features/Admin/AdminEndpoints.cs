@@ -221,6 +221,37 @@ public static class AdminEndpoints
             return Results.Ok(ToResponse(product));
         }).WithName("UpdateProduct").WithOpenApi();
 
+        // Back-office product list: includes hidden and discontinued products and the raw stock values,
+        // which the public catalogue does not expose.
+        group.MapGet("/products", async (string? search, FioreDbContext dbContext, CancellationToken cancellationToken) =>
+        {
+            var query = dbContext.Products.AsNoTracking();
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim().ToLower();
+                query = query.Where(product => product.Name.ToLower().Contains(term) || product.Sku.ToLower().Contains(term));
+            }
+
+            var products = await query
+                .OrderBy(product => product.Name)
+                .Select(product => new
+                {
+                    product.Id,
+                    product.Sku,
+                    product.Name,
+                    price = product.BasePrice,
+                    product.Currency,
+                    product.Status,
+                    product.IsTemporarilyUnavailable,
+                    quantityAvailable = product.Inventory == null ? 0 : product.Inventory.QuantityAvailable,
+                    isAvailable = product.Status == ProductStatus.Available && !product.IsTemporarilyUnavailable &&
+                        product.Inventory != null && product.Inventory.QuantityAvailable > 0,
+                    imageUrl = product.Images.OrderBy(image => image.SortOrder).Select(image => image.ImageUrl).FirstOrDefault()
+                })
+                .ToListAsync(cancellationToken);
+            return Results.Ok(products);
+        }).WithName("ListAdminProducts").WithOpenApi();
+
         // US-8.3: one-click "out of stock" switch; the product stays visible with an unavailable label.
         group.MapPut("/products/{productId:guid}/availability", async (Guid productId, UpdateProductAvailabilityRequest request, FioreDbContext dbContext, IOutputCacheStore outputCacheStore, CancellationToken cancellationToken) =>
         {
@@ -358,6 +389,7 @@ public static class AdminEndpoints
         group.MapPut("/orders/{orderId:guid}/courier", async (
             Guid orderId,
             AssignCourierRequest request,
+            ClaimsPrincipal principal,
             IValidator<AssignCourierRequest> validator,
             OrderLifecycleService lifecycleService,
             CancellationToken cancellationToken) =>
@@ -365,7 +397,7 @@ public static class AdminEndpoints
             var validation = await validator.ValidateAsync(request, cancellationToken);
             if (!validation.IsValid) return Results.ValidationProblem(validation.ToDictionary());
 
-            var result = await lifecycleService.AssignCourier(orderId, request.CourierId, request.CourierName, request.CourierPhone, cancellationToken);
+            var result = await lifecycleService.AssignCourier(orderId, request.CourierId, request.CourierName, request.CourierPhone, cancellationToken, principal.FindFirstValue(ClaimTypes.Email));
             if (result.Error == OrderTransitionError.NotFound) return Results.NotFound();
             if (result.Error == OrderTransitionError.InvalidStatusForCourier)
             {
