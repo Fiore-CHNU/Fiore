@@ -267,6 +267,8 @@ public sealed class JiraAcceptanceTests : IClassFixture<AcceptanceWebApplication
             var history = card.GetProperty("statusHistory").EnumerateArray().ToList();
             history[^1].GetProperty("status").GetString().Should().Be("outForDelivery");
             history[^1].GetProperty("changedBy").GetString().Should().Be(staffEmail);
+            var courierEntry = history.Single(entry => entry.GetProperty("note").GetString()!.StartsWith("Призначено кур’єра"));
+            courierEntry.GetProperty("changedBy").GetString().Should().Be(staffEmail);
         }
         finally
         {
@@ -288,6 +290,34 @@ public sealed class JiraAcceptanceTests : IClassFixture<AcceptanceWebApplication
 
             var unpaid = await _client.GetFromJsonAsync<JsonElement>("/api/v1/admin/orders?status=pendingPayment");
             unpaid.EnumerateArray().Select(item => item.GetProperty("id").GetGuid()).Should().Contain(order.OrderId);
+        }
+        finally
+        {
+            _client.DefaultRequestHeaders.Authorization = null;
+        }
+    }
+
+    [Fact]
+    public async Task Admin_product_list_includes_hidden_products_and_requires_staff()
+    {
+        var hiddenId = await AddProduct(price: 900);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<FioreDbContext>();
+            (await dbContext.Products.SingleAsync(product => product.Id == hiddenId)).Status = ProductStatus.Hidden;
+            await dbContext.SaveChangesAsync();
+        }
+
+        (await _client.GetAsync("/api/v1/admin/products")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        await UseStaffToken();
+        try
+        {
+            var products = await _client.GetFromJsonAsync<JsonElement>("/api/v1/admin/products");
+            var hidden = products.EnumerateArray().Single(product => product.GetProperty("id").GetGuid() == hiddenId);
+            hidden.GetProperty("status").GetString().Should().Be("hidden");
+            hidden.GetProperty("isAvailable").GetBoolean().Should().BeFalse();
+            hidden.GetProperty("quantityAvailable").GetInt32().Should().Be(10);
         }
         finally
         {

@@ -220,7 +220,7 @@ public sealed class CheckoutHandler(FioreDbContext dbContext, DeliverySlotServic
                     Id = Guid.NewGuid(),
                     OrderId = orderId,
                     Status = OrderStatus.PendingPayment,
-                    Note = "Order created; awaiting payment.",
+                    Note = "Замовлення створено, очікує оплати.",
                     ChangedAt = now
                 }
             ]
