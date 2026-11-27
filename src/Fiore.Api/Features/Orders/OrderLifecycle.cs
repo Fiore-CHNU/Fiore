@@ -1,5 +1,6 @@
 using Fiore.Api.Domain.Catalog;
 using Fiore.Api.Domain.Commerce;
+using Fiore.Api.Features.Payments;
 using Fiore.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.OutputCaching;
 using Microsoft.EntityFrameworkCore;
@@ -19,11 +20,20 @@ public sealed class OrderOptions
     public TimeSpan UnpaidLifetime => TimeSpan.FromMinutes(Math.Max(1, UnpaidLifetimeMinutes));
 }
 
-public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions options, TimeProvider timeProvider)
+public sealed class OrderLifecycleService(
+    FioreDbContext dbContext,
+    OrderOptions options,
+    TimeProvider timeProvider,
+    IPaymentGateway paymentGateway,
+    ILogger<OrderLifecycleService> logger)
 {
     public DateTimeOffset UnpaidCutoff() => timeProvider.GetUtcNow() - options.UnpaidLifetime;
 
-    public async Task<PaymentOperationResult> ConfirmSandboxPayment(Guid orderId, Guid sessionToken, CancellationToken cancellationToken)
+    public async Task<PaymentOperationResult> ConfirmSandboxPayment(
+        Guid orderId,
+        Guid sessionToken,
+        CancellationToken cancellationToken,
+        string? simulatedOutcome = null)
     {
         var order = await LoadOrderForGuest(orderId, sessionToken, cancellationToken);
         if (order is null) return PaymentOperationResult.Failure(PaymentError.NotFound);
@@ -41,20 +51,63 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
             return PaymentOperationResult.Failure(PaymentError.PaymentWindowExpired);
         }
 
-        if (order.Status != OrderStatus.PendingPayment || order.Payment is null || order.Payment.Status != PaymentStatus.Initiated)
+        if (order.Status != OrderStatus.PendingPayment ||
+            order.Payment is null ||
+            order.Payment.Status is not (PaymentStatus.Initiated or PaymentStatus.Failed))
         {
             return PaymentOperationResult.Failure(PaymentError.NotPayable);
         }
 
+        PaymentGatewayResult gatewayResult;
+        try
+        {
+            gatewayResult = await paymentGateway.ChargeAsync(
+                new PaymentGatewayRequest(
+                    order.Id,
+                    order.Payment.ProviderPaymentId,
+                    order.Payment.Amount,
+                    order.Payment.Currency,
+                    simulatedOutcome),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(exception, "Payment provider {Provider} failed while charging order {OrderId}.", paymentGateway.ProviderName, order.Id);
+            gatewayResult = PaymentGatewayResult.ProviderUnavailable(
+                "Платіжний сервіс тимчасово недоступний. Замовлення збережено, спробуйте повторити оплату.");
+        }
+
         var now = timeProvider.GetUtcNow();
-        order.Status = OrderStatus.Paid;
-        order.UpdatedAt = now;
-        order.Payment.Status = PaymentStatus.Succeeded;
-        order.Payment.CompletedAt = now;
+        order.Payment.Provider = paymentGateway.ProviderName;
         order.Payment.UpdatedAt = now;
-        AddHistory(order, OrderStatus.Paid, "Оплату підтверджено (тестовий режим).", now);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        return PaymentOperationResult.Success(order.Payment, order.Status);
+        order.UpdatedAt = now;
+
+        switch (gatewayResult.Outcome)
+        {
+            case PaymentGatewayOutcome.Succeeded:
+                order.Status = OrderStatus.Paid;
+                if (!string.IsNullOrWhiteSpace(gatewayResult.ProviderReference))
+                {
+                    order.Payment.ProviderPaymentId = gatewayResult.ProviderReference;
+                }
+                order.Payment.Status = PaymentStatus.Succeeded;
+                order.Payment.CompletedAt = now;
+                AddHistory(order, OrderStatus.Paid, $"Оплату підтверджено ({paymentGateway.ProviderName}).", now);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return PaymentOperationResult.Success(order.Payment, order.Status);
+
+            case PaymentGatewayOutcome.Declined:
+                order.Payment.Status = PaymentStatus.Failed;
+                AddHistory(order, OrderStatus.PendingPayment, "Оплату відхилено платіжним провайдером.", now);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return PaymentOperationResult.Failure(PaymentError.PaymentDeclined, gatewayResult.ErrorMessage);
+
+            default:
+                order.Payment.Status = PaymentStatus.Failed;
+                AddHistory(order, OrderStatus.PendingPayment, "Платіжний сервіс тимчасово недоступний.", now);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return PaymentOperationResult.Failure(PaymentError.ProviderUnavailable, gatewayResult.ErrorMessage);
+        }
     }
 
     public async Task<OrderTransitionResult> TransitionByStaff(Guid orderId, OrderStatus nextStatus, string? changedBy, CancellationToken cancellationToken)
@@ -217,11 +270,11 @@ public sealed class OrderLifecycleService(FioreDbContext dbContext, OrderOptions
         });
 }
 
-public enum PaymentError { NotFound, NotPayable, PaymentWindowExpired }
-public sealed record PaymentOperationResult(Payment? Payment, OrderStatus? OrderStatus, PaymentError? Error)
+public enum PaymentError { NotFound, NotPayable, PaymentWindowExpired, PaymentDeclined, ProviderUnavailable }
+public sealed record PaymentOperationResult(Payment? Payment, OrderStatus? OrderStatus, PaymentError? Error, string? ErrorMessage = null)
 {
     public static PaymentOperationResult Success(Payment payment, OrderStatus orderStatus) => new(payment, orderStatus, null);
-    public static PaymentOperationResult Failure(PaymentError error) => new(null, null, error);
+    public static PaymentOperationResult Failure(PaymentError error, string? errorMessage = null) => new(null, null, error, errorMessage);
 }
 
 public enum OrderTransitionError { NotFound, InvalidTransition, CourierRequired, InvalidStatusForCourier }
