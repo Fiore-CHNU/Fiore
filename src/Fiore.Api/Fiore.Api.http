@@ -86,7 +86,12 @@ Accept: application/json
 
 ###
 
-POST {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout/payments/sandbox/confirm
+POST {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout/payments/confirm
+X-Cart-Token: {{CartToken}}
+
+### Simulate provider failure (returns 502 with retryable: true)
+
+POST {{Fiore_Api_HostAddress}}/api/v1/orders/replace-with-order-id-from-checkout/payments/confirm?outcome=providerUnavailable
 X-Cart-Token: {{CartToken}}
 
 ###

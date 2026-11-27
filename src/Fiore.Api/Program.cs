@@ -59,6 +59,7 @@ builder.Services.AddSingleton(builder.Configuration.GetSection(DeliveryOptions.S
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(builder.Configuration.GetSection(OrderOptions.SectionName).Get<OrderOptions>() ?? new OrderOptions());
 builder.Services.AddScoped<DeliverySlotService>();
+builder.Services.AddScoped<IPaymentGateway, SandboxPaymentGateway>();
 builder.Services.AddScoped<OrderLifecycleService>();
 builder.Services.AddHostedService<UnpaidOrderExpirationService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
