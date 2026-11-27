@@ -50,6 +50,7 @@ The protected back-office API is deliberately restricted to `manager` and `admin
 
 - `POST /api/v1/admin/products` creates a product, initial stock, and optional image gallery.
 - `PUT /api/v1/admin/products/{productId}` changes product data, dimensions, packaging, composition, filter facets, status, stock, and gallery.
+- `GET /api/v1/admin/products?search=` lists all products for the back office, including hidden and discontinued ones, with status, stock, and availability.
 - `PUT /api/v1/admin/products/{productId}/availability` with `{ "isAvailable": false }` is the one-click "out of stock" switch; the bouquet stays visible but cannot be ordered.
 - `POST /api/v1/admin/catalog/facets` creates an occasion, flower-type, or colour facet used by the catalogue filters.
 - `GET /api/v1/admin/orders?status=&deliveryDate=YYYY-MM-DD` is the order queue. Unpaid (`pendingPayment`) orders are hidden unless requested with `status=pendingPayment`.

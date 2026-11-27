@@ -92,19 +92,19 @@ public sealed class OrderLifecycleService(
                 }
                 order.Payment.Status = PaymentStatus.Succeeded;
                 order.Payment.CompletedAt = now;
-                AddHistory(order, OrderStatus.Paid, $"Payment confirmed ({paymentGateway.ProviderName}).", now);
+                AddHistory(order, OrderStatus.Paid, $"Оплату підтверджено ({paymentGateway.ProviderName}).", now);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return PaymentOperationResult.Success(order.Payment, order.Status);
 
             case PaymentGatewayOutcome.Declined:
                 order.Payment.Status = PaymentStatus.Failed;
-                AddHistory(order, OrderStatus.PendingPayment, "Payment declined by provider.", now);
+                AddHistory(order, OrderStatus.PendingPayment, "Оплату відхилено платіжним провайдером.", now);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return PaymentOperationResult.Failure(PaymentError.PaymentDeclined, gatewayResult.ErrorMessage);
 
             default:
                 order.Payment.Status = PaymentStatus.Failed;
-                AddHistory(order, OrderStatus.PendingPayment, "Payment provider unavailable.", now);
+                AddHistory(order, OrderStatus.PendingPayment, "Платіжний сервіс тимчасово недоступний.", now);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return PaymentOperationResult.Failure(PaymentError.ProviderUnavailable, gatewayResult.ErrorMessage);
         }
@@ -139,7 +139,7 @@ public sealed class OrderLifecycleService(
 
         order.Status = nextStatus;
         order.UpdatedAt = now;
-        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Cancelled by staff." : "Status updated by staff.", now, changedBy);
+        AddHistory(order, nextStatus, nextStatus == OrderStatus.Cancelled ? "Скасовано працівником." : "Статус змінено працівником.", now, changedBy);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
     }
@@ -149,7 +149,8 @@ public sealed class OrderLifecycleService(
         Guid? courierId,
         string courierName,
         string? courierPhone,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? changedBy = null)
     {
         var order = await LoadOrder(orderId, cancellationToken);
         if (order is null) return OrderTransitionResult.Failure(OrderTransitionError.NotFound);
@@ -164,7 +165,7 @@ public sealed class OrderLifecycleService(
         order.Delivery.CourierPhone = string.IsNullOrWhiteSpace(courierPhone) ? null : courierPhone.Trim();
         order.Delivery.CourierAssignedAt = now;
         order.UpdatedAt = now;
-        AddHistory(order, order.Status, $"Courier assigned: {order.Delivery.CourierName}.", now);
+        AddHistory(order, order.Status, $"Призначено кур’єра: {order.Delivery.CourierName}.", now, changedBy);
         await dbContext.SaveChangesAsync(cancellationToken);
         return OrderTransitionResult.Success(order);
     }
@@ -218,7 +219,7 @@ public sealed class OrderLifecycleService(
             order.Payment.Status = PaymentStatus.Expired;
             order.Payment.UpdatedAt = now;
         }
-        AddHistory(order, OrderStatus.Cancelled, "Unpaid order expired.", now);
+        AddHistory(order, OrderStatus.Cancelled, "Не оплачено вчасно, замовлення скасовано автоматично.", now);
     }
 
     public static bool IsValidStaffTransition(OrderStatus current, OrderStatus next) => (current, next) switch
