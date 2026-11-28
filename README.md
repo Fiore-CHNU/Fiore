@@ -64,6 +64,10 @@ Production requires a `Jwt__SigningKey` secret. The built-in development key is 
 
 For the React/Vite client, CORS allows the default local development and preview origins: `http://localhost:5173` and `http://localhost:4173`. Add a production client URL through `Cors:AllowedOrigins` before deployment.
 
+## Contributing
+
+Branch names, commit format, pull requests, and CI rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Local setup
 
 Prerequisites: .NET SDK 8 and Docker Desktop.
