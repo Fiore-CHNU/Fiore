@@ -15,8 +15,8 @@ public sealed class BusinessRuleTests
     private static readonly DeliverySlotService Delivery = new(null!, Options, TimeProvider.System);
 
     [Theory]
-    [InlineData(500, 120)]
-    [InlineData(1499.99, 120)]
+    [InlineData(500, 100)]
+    [InlineData(1499.99, 100)]
     [InlineData(1500, 0)]
     [InlineData(2650, 0)]
     public void US_3_2_delivery_fee_is_free_from_1500(decimal subtotal, decimal expectedFee)
